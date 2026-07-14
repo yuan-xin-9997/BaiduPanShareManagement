@@ -1,0 +1,13 @@
+{
+  "app_name": "百度网盘分享链接管理工具",
+  "host": "0.0.0.0",
+  "port": 29080,
+  "timezone": "Asia/Shanghai",
+  "database_path": "data/app.sqlite3",
+  "password_file": "data/password.txt",
+  "secret_file": "data/secrets.json",
+  "log_file": "logs/app.log",
+  "log_retention_days": 30,
+  "task_workers": 2,
+  "scheduler_poll_seconds": 15
+}

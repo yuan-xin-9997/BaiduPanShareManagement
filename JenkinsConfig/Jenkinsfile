@@ -1,0 +1,39 @@
+pipeline {
+    agent any
+    triggers { pollSCM('H/30 * * * *') }
+    environment {
+        DEPLOY_DIR = '/opt/BaiduPanShareManagement'
+        REPOSITORY = 'git@github.com:yuan-xin-9997/BaiduPanShareManagement.git'
+    }
+    stages {
+        stage('停止服务') {
+            steps { sh 'if [ -x "$DEPLOY_DIR/stop.sh" ]; then "$DEPLOY_DIR/stop.sh"; fi' }
+        }
+        stage('更新代码') {
+            steps {
+                sh '''
+                    if [ -d "$DEPLOY_DIR/.git" ]; then
+                      git -C "$DEPLOY_DIR" pull --ff-only
+                    else
+                      git clone "$REPOSITORY" "$DEPLOY_DIR"
+                    fi
+                '''
+            }
+        }
+        stage('安装与测试') {
+            steps {
+                sh '''
+                    cd "$DEPLOY_DIR"
+                    python3 -m pip install --user --no-build-isolation -e '.[web,dev]'
+                    PYTHONPATH=src/app python3 -m pytest -q
+                '''
+            }
+        }
+        stage('启动服务') {
+            steps { sh 'chmod +x "$DEPLOY_DIR"/*.sh && "$DEPLOY_DIR/start.sh"' }
+        }
+    }
+    post {
+        failure { sh 'if [ -x "$DEPLOY_DIR/start.sh" ]; then "$DEPLOY_DIR/start.sh" || true; fi' }
+    }
+}

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bdpan-share-management"
+version = "0.2.0"
+description = "百度网盘分享链接管理工具"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28",
+]
+
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
+dev = ["pytest>=7.0", "httpx>=0.27"]
+
+[project.scripts]
+bdpan = "bdpan.cli:main"
+bdpan-web = "bdpan.web:main"
+
+[tool.setuptools.packages.find]
+where = ["src/app"]
+include = ["bdpan*"]
+
+[tool.setuptools.package-data]
+bdpan = ["web_static/*", "web_static/assets/*"]

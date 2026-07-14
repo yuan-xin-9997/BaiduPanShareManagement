@@ -57,6 +57,7 @@ cover/
 
 # Django stuff:
 *.log
+logs/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -116,6 +117,7 @@ ipython_config.py
 # pdm.toml
 .pdm-python
 .pdm-build/
+node_modules/
 
 # pixi
 #   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
@@ -216,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Runtime data files (keep the data directory and password.txt tracked)
+data/app.sqlite3
+data/app.sqlite3-*
+data/secrets.json
