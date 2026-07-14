@@ -13,7 +13,8 @@ pipeline {
                 sh '''
                     mkdir -p "$DEPLOY_DIR" "$DEPLOY_DIR/data" "$DEPLOY_DIR/logs"
                     rsync -a --delete \
-                      --exclude='.git/' --exclude='data/' --exclude='logs/' \
+                      --exclude='.git/' --exclude='.venv/' \
+                      --exclude='data/' --exclude='logs/' \
                       "$WORKSPACE/" "$DEPLOY_DIR/"
                     if [ ! -f "$DEPLOY_DIR/data/password.txt" ]; then
                       cp "$WORKSPACE/data/password.txt" "$DEPLOY_DIR/data/password.txt"
@@ -25,16 +26,26 @@ pipeline {
             steps {
                 sh '''
                     cd "$DEPLOY_DIR"
-                    python3 -m pip install --user --no-build-isolation -e '.[web,dev]'
-                    PYTHONPATH=src/app python3 -m pytest -q
+                    if [ ! -x .venv/bin/python ]; then
+                      python3 -m venv .venv
+                    fi
+                    .venv/bin/python -m pip install --no-build-isolation -e '.[web,dev]'
+                    PYTHONPATH=src/app .venv/bin/python -m pytest -q
                 '''
             }
         }
         stage('启动服务') {
-            steps { sh 'chmod +x "$DEPLOY_DIR"/*.sh && "$DEPLOY_DIR/start.sh"' }
+            steps {
+                sh '''
+                    chmod +x "$DEPLOY_DIR"/*.sh
+                    PYTHON="$DEPLOY_DIR/.venv/bin/python" "$DEPLOY_DIR/start.sh"
+                '''
+            }
         }
     }
     post {
-        failure { sh 'if [ -x "$DEPLOY_DIR/start.sh" ]; then "$DEPLOY_DIR/start.sh" || true; fi' }
+        failure {
+            sh 'if [ -x "$DEPLOY_DIR/.venv/bin/python" ] && [ -x "$DEPLOY_DIR/start.sh" ]; then PYTHON="$DEPLOY_DIR/.venv/bin/python" "$DEPLOY_DIR/start.sh" || true; fi'
+        }
     }
 }
