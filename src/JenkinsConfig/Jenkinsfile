@@ -3,7 +3,6 @@ pipeline {
     triggers { pollSCM('H/30 * * * *') }
     environment {
         DEPLOY_DIR = '/opt/BaiduPanShareManagement'
-        REPOSITORY = 'git@github.com:yuan-xin-9997/BaiduPanShareManagement.git'
     }
     stages {
         stage('停止服务') {
@@ -12,10 +11,12 @@ pipeline {
         stage('更新代码') {
             steps {
                 sh '''
-                    if [ -d "$DEPLOY_DIR/.git" ]; then
-                      git -C "$DEPLOY_DIR" pull --ff-only
-                    else
-                      git clone "$REPOSITORY" "$DEPLOY_DIR"
+                    mkdir -p "$DEPLOY_DIR" "$DEPLOY_DIR/data" "$DEPLOY_DIR/logs"
+                    rsync -a --delete \
+                      --exclude='.git/' --exclude='data/' --exclude='logs/' \
+                      "$WORKSPACE/" "$DEPLOY_DIR/"
+                    if [ ! -f "$DEPLOY_DIR/data/password.txt" ]; then
+                      cp "$WORKSPACE/data/password.txt" "$DEPLOY_DIR/data/password.txt"
                     fi
                 '''
             }

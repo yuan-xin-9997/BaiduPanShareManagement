@@ -185,7 +185,10 @@ bdpan sync-all
 - `status.ps1` / `status.sh`：检查进程和 HTTP 健康状态。
 
 部署更新时保留整个 `data` 目录，尤其是 `password.txt`、`secrets.json` 和
-`app.sqlite3`。Jenkinsfile 位于 `src/JenkinsConfig/Jenkinsfile`。
+`app.sqlite3`。Jenkins 默认部署到 `/opt/BaiduPanShareManagement`，通过工作区同步
+代码并保留 `data` 与 `logs`。该目录首次部署时需要由管理员创建并授权给 Jenkins。
+Jenkinsfile 位于
+`src/JenkinsConfig/Jenkinsfile`。
 
 ## 设计与需求文档
 

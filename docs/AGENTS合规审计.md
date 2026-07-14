@@ -28,6 +28,6 @@
 1. 将当前全部未跟踪文件纳入 Git 并提交到 GitHub。
 2. 在 Jenkins 中创建 Pipeline 任务，使用 SSH 仓库地址和
    `JenkinsConfig/Jenkinsfile`。
-3. 手动触发首次构建，验证 `/opt/BaiduPanShareManagement` 部署目录的 Python 权限。
+3. 手动触发首次构建，验证 `/opt/BaiduPanShareManagement` 部署目录。
 4. 为服务配置最终内网端口和 HTTPS 反向代理域名。
 5. 首次登录后修改 `admin / admin123` 默认密码。
