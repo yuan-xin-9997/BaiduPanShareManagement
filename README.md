@@ -24,7 +24,7 @@ data/app.sqlite3        SQLite 数据库（首次运行生成）
 data/password.txt       登录用户来源
 data/secrets.json       Cookie 与会话密钥（首次运行生成，不提交 Git）
 logs/                   应用日志、进程输出和 PID
-JenkinsConfig/          Jenkins 流水线
+src/JenkinsConfig/      Jenkins 流水线
 tests/                  自动化测试
 ```
 
@@ -185,7 +185,7 @@ bdpan sync-all
 - `status.ps1` / `status.sh`：检查进程和 HTTP 健康状态。
 
 部署更新时保留整个 `data` 目录，尤其是 `password.txt`、`secrets.json` 和
-`app.sqlite3`。Jenkinsfile 位于 `JenkinsConfig/Jenkinsfile`。
+`app.sqlite3`。Jenkinsfile 位于 `src/JenkinsConfig/Jenkinsfile`。
 
 ## 设计与需求文档
 
