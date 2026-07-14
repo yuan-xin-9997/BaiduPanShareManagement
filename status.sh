@@ -5,7 +5,7 @@ PID_FILE="$ROOT/logs/server.pid"
 PORT="$(${PYTHON:-python3} -c "import json; print(json.load(open('$ROOT/config/app.json', encoding='utf-8'))['port'])")"
 if [[ ! -f "$PID_FILE" ]]; then echo "状态：未运行"; exit 1; fi
 PID="$(cat "$PID_FILE")"
-if ! kill -0 "$PID" 2>/dev/null; then echo "状态：进程不存在"; exit 1; fi
+if [[ ! -d "/proc/$PID" ]]; then echo "状态：进程不存在"; exit 1; fi
 if curl -fsS --max-time 3 "http://127.0.0.1:$PORT/api/bootstrap" >/dev/null; then
   echo "状态：运行中 PID=$PID HTTP=200"
 else
