@@ -39,7 +39,10 @@ pipeline {
             steps {
                 sh '''
                     chmod +x "$DEPLOY_DIR"/*.sh
-                    PYTHON="$DEPLOY_DIR/.venv/bin/python" "$DEPLOY_DIR/start.sh"
+                    JENKINS_NODE_COOKIE=dontKillMe BUILD_ID=dontKillMe \
+                      PYTHON="$DEPLOY_DIR/.venv/bin/python" "$DEPLOY_DIR/start.sh"
+                    sleep 2
+                    PYTHON="$DEPLOY_DIR/.venv/bin/python" "$DEPLOY_DIR/status.sh"
                 '''
             }
         }
