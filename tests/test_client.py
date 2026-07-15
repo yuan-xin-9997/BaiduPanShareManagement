@@ -7,6 +7,11 @@ from bdpan.client import BaiduPanClient, BaiduPanError, ShareFile
 
 
 class BdstokenTests(unittest.TestCase):
+    def test_disables_response_compression_for_baidu_web_requests(self) -> None:
+        client = BaiduPanClient(cookie="BDUSS=test")
+
+        self.assertEqual(client.session.headers["Accept-Encoding"], "identity")
+
     def test_uses_current_web_app_id(self) -> None:
         client = BaiduPanClient(cookie="BDUSS=test")
         client._get = Mock(return_value={

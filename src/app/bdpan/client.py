@@ -31,7 +31,10 @@ HEADERS = {
     "Sec-Fetch-Site": "same-site",
     "Sec-Fetch-Mode": "navigate",
     "Referer": "https://pan.baidu.com",
-    "Accept-Encoding": "gzip, deflate, br",
+    # 百度或中间代理偶尔返回带 gzip 标记但正文未压缩的响应，requests 会在
+    # JSON/HTML 解析前抛出 ContentDecodingError。分享接口数据量较小，禁用压缩
+    # 比反复猜测错误编码更可靠。
+    "Accept-Encoding": "identity",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
