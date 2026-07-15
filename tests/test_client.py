@@ -31,6 +31,19 @@ class BdstokenTests(unittest.TestCase):
         with self.assertRaisesRegex(BaiduPanError, "没有 bdstoken"):
             client.get_bdstoken()
 
+    def test_share_token_falls_back_to_empty_on_login_risk_control(self) -> None:
+        client = BaiduPanClient(cookie="BDUSS=test")
+        client.get_bdstoken = Mock(side_effect=BaiduPanError(-6, "risk control"))
+
+        self.assertEqual(client._get_share_bdstoken(), "")
+
+    def test_share_token_keeps_unrelated_errors(self) -> None:
+        client = BaiduPanClient(cookie="BDUSS=test")
+        client.get_bdstoken = Mock(side_effect=BaiduPanError(105, "missing"))
+
+        with self.assertRaises(BaiduPanError):
+            client._get_share_bdstoken()
+
 
 class VerifyPasswordTests(unittest.TestCase):
     def _client(self) -> BaiduPanClient:
@@ -58,6 +71,15 @@ class VerifyPasswordTests(unittest.TestCase):
 
         _, kwargs = client._post.call_args
         self.assertEqual(kwargs["params"]["surl"], "pcPgQlsDftMBE6CZ5ZIqsQ")
+
+    def test_uses_empty_token_when_account_cookie_is_risk_controlled(self) -> None:
+        client = BaiduPanClient(cookie="BDUSS=test")
+        client.get_bdstoken = Mock(side_effect=BaiduPanError(-6, "risk control"))
+        client._post = Mock(return_value={"errno": 0, "randsk": "test-randsk"})
+
+        client.verify_password("1example", "6666")
+
+        self.assertEqual(client._post.call_args.kwargs["params"]["bdstoken"], "")
 
 
 class SharePageParsingTests(unittest.TestCase):

@@ -333,6 +333,19 @@ class BaiduPanClient:
         logger.info("获取 bdstoken 成功")
         return self.bdstoken
 
+    def _get_share_bdstoken(self) -> str:
+        """分享接口允许匿名 token；账号登录态被风控时降级为空值。"""
+        try:
+            return self.get_bdstoken()
+        except BaiduPanError as exc:
+            if exc.code not in {-6, -4}:
+                raise
+            logger.warning(
+                "百度账号登录态不可用于分享接口 (errno=%s)，使用空 bdstoken",
+                exc.code,
+            )
+            return ""
+
     def verify_password(self, surl: str, password: str) -> str:
         """验证提取码，返回 randsk (bdclnd)。
 
@@ -343,7 +356,7 @@ class BaiduPanClient:
         Returns:
             randsk 字符串，用于更新 cookie
         """
-        bdstoken = self.get_bdstoken()
+        bdstoken = self._get_share_bdstoken()
         # /s/1xxx 中的前导 "1" 是分享页路径标记，/share/verify
         # 接口需要的是不含该标记的真实 surl，否则会返回 errno 105。
         api_surl = surl[1:] if surl.startswith("1") else surl
@@ -427,7 +440,7 @@ class BaiduPanClient:
         Returns:
             文件信息字典列表
         """
-        bdstoken = self.get_bdstoken()
+        bdstoken = self._get_share_bdstoken()
         url = f"{BASE_URL}/share/list"
         base_params: dict[str, Any] = {
             "shareid": share_id,
@@ -633,7 +646,7 @@ class BaiduPanClient:
         params = {
             "sign": sign,
             "timestamp": str(timestamp),
-            "bdstoken": self.get_bdstoken(),
+            "bdstoken": self._get_share_bdstoken(),
             "channel": "chunlei",
             "web": "1",
             "app_id": "250528",
