@@ -3,7 +3,33 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bdpan.client import BaiduPanClient, ShareFile
+from bdpan.client import BaiduPanClient, BaiduPanError, ShareFile
+
+
+class BdstokenTests(unittest.TestCase):
+    def test_uses_current_web_app_id(self) -> None:
+        client = BaiduPanClient(cookie="BDUSS=test")
+        client._get = Mock(return_value={
+            "errno": 0,
+            "result": {"bdstoken": "test-token"},
+        })
+
+        self.assertEqual(client.get_bdstoken(), "test-token")
+        self.assertEqual(client._get.call_args.args[1]["app_id"], "250528")
+
+    def test_reports_baidu_errno_and_cookie_guidance(self) -> None:
+        client = BaiduPanClient(cookie="BDUSS=expired")
+        client._get = Mock(return_value={"errno": -6})
+
+        with self.assertRaisesRegex(BaiduPanError, r"errno=-6.*Cookie"):
+            client.get_bdstoken()
+
+    def test_reports_missing_token_without_key_error(self) -> None:
+        client = BaiduPanClient(cookie="BDUSS=test")
+        client._get = Mock(return_value={"errno": 0, "result": {}})
+
+        with self.assertRaisesRegex(BaiduPanError, "没有 bdstoken"):
+            client.get_bdstoken()
 
 
 class VerifyPasswordTests(unittest.TestCase):

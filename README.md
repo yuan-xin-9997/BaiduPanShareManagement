@@ -98,6 +98,11 @@ admin / admin123
 “系统配置”页面保存。Cookie 至少应包含有效的登录字段。Cookie 等同登录凭据，
 不要提交到 Git 或发送给他人。
 
+如果提示“获取 bdstoken 失败”，请先在浏览器重新登录 `pan.baidu.com`，再从任意
+网盘请求的 Request Headers 中复制完整的 `Cookie` 请求头值。至少应包含有效的
+`BDUSS`；不要粘贴 `Set-Cookie`、JSON 导出内容或仅复制单个字段。新版错误信息会
+显示百度返回的 `errno`，用于区分 Cookie 失效和接口响应异常。
+
 也可以使用 CLI：
 
 ```bash

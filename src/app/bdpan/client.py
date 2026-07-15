@@ -20,6 +20,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://pan.baidu.com"
+PAN_WEB_APP_ID = "250528"
 
 HEADERS = {
     "Host": "pan.baidu.com",
@@ -307,14 +308,28 @@ class BaiduPanClient:
         url = f"{BASE_URL}/api/gettemplatevariable"
         params = {
             "clienttype": "0",
-            "app_id": "38824127",
+            "app_id": PAN_WEB_APP_ID,
             "web": "1",
             "fields": '["bdstoken","token","uk","isdocuser","servertime"]',
         }
         data = self._get(url, params)
-        if data.get("errno") != 0:
-            raise BaiduPanError(data.get("errno", -1), "获取 bdstoken 失败")
-        self.bdstoken = data["result"]["bdstoken"]
+        errno = data.get("errno", -1)
+        if errno != 0:
+            detail = ERROR_CODES.get(errno, "百度拒绝了当前登录凭据")
+            raise BaiduPanError(
+                errno,
+                f"获取 bdstoken 失败（errno={errno}）：{detail}。"
+                "请重新登录 pan.baidu.com 后复制完整 Cookie",
+            )
+        result = data.get("result")
+        token = result.get("bdstoken") if isinstance(result, dict) else None
+        if not token:
+            raise BaiduPanError(
+                -1,
+                "获取 bdstoken 失败：百度响应中没有 bdstoken。"
+                "请确认 Cookie 包含有效的 BDUSS，并重新登录后复制完整 Cookie",
+            )
+        self.bdstoken = str(token)
         logger.info("获取 bdstoken 成功")
         return self.bdstoken
 
