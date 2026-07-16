@@ -51,6 +51,17 @@ function showToast(message) {
   setTimeout(() => { if (toastText.value === message) toastText.value = '' }, 3500)
 }
 function formatTime(value) { return value ? new Date(value * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '从未' }
+function formatDuration(startedAt, finishedAt) {
+  if (!startedAt || !finishedAt) return '进行中'
+  let seconds = Math.max(0, Math.round(finishedAt - startedAt))
+  const hours = Math.floor(seconds / 3600)
+  seconds %= 3600
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  if (hours) return `${hours}小时${minutes}分`
+  if (minutes) return `${minutes}分${remainder}秒`
+  return `${remainder}秒`
+}
 function formatSize(value) {
   let size = Number(value || 0)
   for (const unit of ['B', 'KB', 'MB', 'GB', 'TB']) {
@@ -169,7 +180,32 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
 
       <section v-if="activeView === 'mappings'" class="content"><div class="toolbar"><div class="stats"><strong>{{ state.mappings.length }}</strong><span>条同步映射</span></div><div class="button-row"><button @click="syncAll">同步全部</button><button class="primary" @click="openMapping()">＋ 新建映射</button></div></div><div v-if="!state.mappings.length" class="empty"><b>还没有同步映射</b><span>关联远端目录与本机或 NAS 目录。</span></div><div class="item-list"><article v-for="mapping in state.mappings" :key="mapping.id" class="item-card mapping"><div class="file-icon">映</div><div class="grow"><div class="item-title"><h3>{{ state.links.find(item => item.id === mapping.share_link_id)?.title || '未知分享' }}</h3><span class="pill">{{ mapping.storage_type === 'smb_mount' ? 'NAS · SMB' : '本机目录' }}</span></div><div class="route"><span>{{ mapping.remote_path }}</span><b>→</b><span>{{ mapping.local_path }}</span></div><div class="meta"><span>{{ mapping.sync_strategy }}</span><span>{{ mapping.auto_sync ? `每 ${mapping.schedule_interval} 分钟自动同步` : '手动同步' }}</span><span>上次：{{ formatTime(mapping.last_synced) }}</span></div></div><div class="actions"><button @click="probeStorage(mapping)">检测</button><button class="accent" @click="syncOne(mapping.id)">同步</button><button @click="openMapping(mapping)">编辑</button><button class="danger" @click="deleteMapping(mapping.id)">删除</button></div></article></div></section>
 
-      <section v-if="activeView === 'tasks'" class="content"><div class="two-columns"><div class="panel"><div class="panel-head"><h2>当前任务</h2><span>{{ state.tasks.length }}</span></div><div v-if="!state.tasks.length" class="empty compact">暂无任务</div><div v-for="task in state.tasks" :key="task.id" class="log-row"><span :class="['status-dot', task.status]"></span><div><strong>{{ task.title }}</strong><p>{{ task.message }}</p></div><time>{{ formatTime(task.created_at) }}</time></div></div><div class="panel"><div class="panel-head"><h2>同步历史</h2><span>{{ state.runs.length }}</span></div><div v-if="!state.runs.length" class="empty compact">暂无同步记录</div><div v-for="run in state.runs" :key="run.id" class="log-row"><span :class="['status-dot', run.status]"></span><div><strong>映射 #{{ run.mapping_id }} · {{ run.trigger_type }}</strong><p>{{ run.message }}</p></div><time>{{ formatTime(run.started_at) }}</time></div></div></div></section>
+      <section v-if="activeView === 'tasks'" class="content">
+        <div class="two-columns">
+          <div class="panel">
+            <div class="panel-head"><h2>当前任务</h2><span>{{ state.tasks.length }}</span></div>
+            <div v-if="!state.tasks.length" class="empty compact">暂无任务</div>
+            <div v-for="task in state.tasks" :key="task.id" class="log-row">
+              <span :class="['status-dot', task.status]"></span>
+              <div><strong>{{ task.title }}</strong><p>{{ task.message }}</p></div>
+              <time>创建：{{ formatTime(task.created_at) }}</time>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>同步历史</h2><span>{{ state.runs.length }}</span></div>
+            <div v-if="!state.runs.length" class="empty compact">暂无同步记录</div>
+            <div v-for="run in state.runs" :key="run.id" class="log-row">
+              <span :class="['status-dot', run.status]"></span>
+              <div><strong>映射 #{{ run.mapping_id }} · {{ run.trigger_type }}</strong><p>{{ run.message }}</p></div>
+              <div class="run-times">
+                <time>开始：{{ formatTime(run.started_at) }}</time>
+                <time>完成：{{ run.finished_at ? formatTime(run.finished_at) : '进行中' }}</time>
+                <time>耗时：{{ formatDuration(run.started_at, run.finished_at) }}</time>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <section v-if="activeView === 'settings'" class="content"><div class="settings-grid"><div class="panel"><div class="panel-head"><h2>运行配置</h2><span>只读</span></div><dl v-if="settings"><template v-for="(value, key) in settings.config" :key="key"><dt>{{ key }}</dt><dd>{{ value }}</dd></template></dl></div><div class="panel"><div class="panel-head"><h2>百度网盘凭据</h2><span :class="['pill', settings?.cookie_configured ? 'active' : '']">{{ settings?.cookie_configured ? '已配置' : '未配置' }}</span></div><p class="muted">Cookie 仅保存在服务端 secrets.json，不会返回浏览器。</p><label>完整 Cookie<textarea v-model="cookieValue" rows="9" placeholder="粘贴包含 BDUSS、STOKEN 等字段的 Cookie"></textarea></label><button class="primary" @click="saveSettings">保存凭据</button></div></div></section>
 
@@ -182,3 +218,12 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
     <transition name="toast"><div v-if="toastText" class="toast">{{ toastText }}</div></transition>
   </div>
 </template>
+
+<style scoped>
+.run-times {
+  display: grid;
+  gap: 3px;
+  text-align: right;
+  white-space: nowrap;
+}
+</style>
