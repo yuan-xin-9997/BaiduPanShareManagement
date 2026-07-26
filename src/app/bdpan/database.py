@@ -81,6 +81,27 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     finished_at   REAL NOT NULL DEFAULT 0,
     FOREIGN KEY (mapping_id) REFERENCES sync_mappings(id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS sync_file_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    mapping_id    INTEGER,
+    run_id        INTEGER NOT NULL,
+    relative_path TEXT NOT NULL,
+    file_name     TEXT NOT NULL,
+    action        TEXT NOT NULL CHECK (action IN ('added', 'updated')),
+    synced_at     REAL NOT NULL,
+    FOREIGN KEY (mapping_id) REFERENCES sync_mappings(id) ON DELETE SET NULL,
+    FOREIGN KEY (run_id) REFERENCES sync_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_file_events_mapping_path
+    ON sync_file_events(mapping_id, relative_path, id);
+CREATE INDEX IF NOT EXISTS idx_sync_file_events_run
+    ON sync_file_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_sync_file_events_file_name
+    ON sync_file_events(file_name, relative_path);
+CREATE INDEX IF NOT EXISTS idx_sync_file_events_synced_at
+    ON sync_file_events(synced_at, relative_path);
 """
 
 # 开启外键支持（SQLite 默认关闭，必须显式打开 CASCADE 才生效）。
@@ -415,11 +436,90 @@ class Database:
 
     def list_sync_runs(self, limit: int = 100) -> list[dict[str, Any]]:
         cur = self.conn.execute(
-            "SELECT r.*, m.remote_path, m.local_path "
+            "SELECT r.*, m.remote_path, m.local_path, "
+            "EXISTS(SELECT 1 FROM sync_file_events e WHERE e.run_id = r.id) "
+            "AS has_files "
             "FROM sync_runs r LEFT JOIN sync_mappings m ON m.id = r.mapping_id "
             "ORDER BY r.id DESC LIMIT ?", (limit,)
         )
-        return [dict(row) for row in cur.fetchall()]
+        return [
+            {**dict(row), "has_files": bool(row["has_files"])}
+            for row in cur.fetchall()
+        ]
+
+    def get_sync_run(self, run_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM sync_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def add_sync_file_events(
+        self, mapping_id: int, run_id: int,
+        added: list[str], updated: list[str],
+    ) -> int:
+        """在一个事务中保存单次同步成功新增或更新的文件。"""
+        synced_at = __import__("time").time()
+        rows = [
+            (mapping_id, run_id, path, self._file_name(path), action, synced_at)
+            for action, paths in (("added", added), ("updated", updated))
+            for path in paths
+        ]
+        if not rows:
+            return 0
+        with self.conn:
+            self.conn.executemany(
+                "INSERT INTO sync_file_events "
+                "(mapping_id, run_id, relative_path, file_name, action, synced_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+        return len(rows)
+
+    def list_mapping_synced_files(
+        self, mapping_id: int, sort_by: str = "synced_at",
+        direction: str = "desc",
+    ) -> list[dict[str, Any]]:
+        """列出映射内每个相对路径最新一次成功同步记录。"""
+        order_by = self._sync_file_order(sort_by, direction)
+        rows = self.conn.execute(
+            "SELECT e.id, e.mapping_id, e.run_id, e.relative_path, "
+            "e.file_name, e.action, e.synced_at "
+            "FROM sync_file_events e "
+            "WHERE e.mapping_id = ? AND e.id = ("
+            "  SELECT latest.id FROM sync_file_events latest "
+            "  WHERE latest.mapping_id = e.mapping_id "
+            "    AND latest.relative_path = e.relative_path "
+            "  ORDER BY latest.synced_at DESC, latest.id DESC LIMIT 1"
+            f") ORDER BY {order_by}",
+            (mapping_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_run_synced_files(
+        self, run_id: int, sort_by: str = "synced_at",
+        direction: str = "desc",
+    ) -> list[dict[str, Any]]:
+        """列出单次同步运行成功同步的文件。"""
+        order_by = self._sync_file_order(sort_by, direction)
+        rows = self.conn.execute(
+            "SELECT id, mapping_id, run_id, relative_path, file_name, "
+            "action, synced_at FROM sync_file_events WHERE run_id = ? "
+            f"ORDER BY {order_by}",
+            (run_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _sync_file_order(sort_by: str, direction: str) -> str:
+        columns = {"file_name": "file_name COLLATE NOCASE", "synced_at": "synced_at"}
+        if sort_by not in columns or direction not in {"asc", "desc"}:
+            raise ValueError("排序参数无效")
+        sql_direction = direction.upper()
+        return f"{columns[sort_by]} {sql_direction}, relative_path COLLATE NOCASE {sql_direction}"
+
+    @staticmethod
+    def _file_name(relative_path: str) -> str:
+        return relative_path.replace("\\", "/").rsplit("/", 1)[-1]
 
     # ------------------------------------------------------------------ #
     # 行 → dataclass 转换

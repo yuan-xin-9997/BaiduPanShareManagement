@@ -27,6 +27,8 @@ class TaskState:
     message: str = "等待执行"
     created_at: float = 0
     finished_at: float = 0
+    run_id: int | None = None
+    has_files: bool = False
 
 
 class TaskManager:
@@ -54,12 +56,15 @@ class TaskManager:
         self.executor.shutdown(wait=False, cancel_futures=False)
 
     def submit(
-        self, kind: str, title: str, func: Callable[[Callable[[str], None]], str]
+        self, kind: str, title: str, func: Callable[[Callable[[str], None]], str],
+        on_created: Callable[[str], None] | None = None,
     ) -> str:
         task_id = uuid.uuid4().hex
         state = TaskState(task_id, kind, title, created_at=time.time())
         with self._lock:
             self.tasks[task_id] = state
+        if on_created:
+            on_created(task_id)
 
         def run() -> None:
             self._update(task_id, status="running", message="正在执行")
@@ -85,6 +90,8 @@ class TaskManager:
                 return None
             self._running_mappings.add(mapping_id)
 
+        task_ref: dict[str, str] = {}
+
         def sync(progress: Callable[[str], None]) -> str:
             run_id: int | None = None
             db = Database(self.db_path)
@@ -97,6 +104,7 @@ class TaskManager:
                     raise ValueError("关联的分享链接不存在")
                 entries = db.get_file_entries(mapping.share_link_id)
                 run_id = db.add_sync_run(mapping_id, trigger_type)
+                self._update(task_ref["id"], run_id=run_id)
                 db.update_sync_run(run_id, "running", "正在检查目标存储")
                 progress("正在检查目标存储连接")
                 ensure_storage_ready(mapping.local_path, mapping.storage_type)
@@ -113,11 +121,16 @@ class TaskManager:
                 message = result.summary()
                 if result.errors:
                     message += "；" + "；".join(result.errors[:10])
-                db.update_sync_run(
-                    run_id, "failed" if result.errors else "success", message
+                file_count = db.add_sync_file_events(
+                    mapping_id, run_id, result.files_added, result.files_updated
                 )
+                self._update(task_ref["id"], has_files=file_count > 0)
                 if result.errors:
+                    db.update_sync_run(run_id, "failed", message)
                     raise RuntimeError(message)
+                db.update_sync_run(
+                    run_id, "success", message
+                )
                 return message
             except Exception as exc:
                 if run_id is not None:
@@ -128,12 +141,19 @@ class TaskManager:
                 with self._lock:
                     self._running_mappings.discard(mapping_id)
 
-        return self.submit("sync", f"同步映射 #{mapping_id}", sync)
+        return self.submit(
+            "sync", f"同步映射 #{mapping_id}", sync,
+            on_created=lambda task_id: task_ref.update(id=task_id),
+        )
 
     def list_tasks(self) -> list[dict]:
         with self._lock:
             states = sorted(
-                self.tasks.values(), key=lambda item: item.created_at, reverse=True
+                (
+                    item for item in self.tasks.values()
+                    if item.status in {"queued", "running"}
+                ),
+                key=lambda item: item.created_at, reverse=True,
             )[:100]
             return [asdict(item) for item in states]
 

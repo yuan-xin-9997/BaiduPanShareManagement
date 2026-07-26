@@ -501,6 +501,32 @@ def create_app(
         finally:
             store.close()
 
+    @app.get("/api/mappings/{mapping_id}/files")
+    def mapping_synced_files(
+        mapping_id: int, sort_by: str = "synced_at", direction: str = "desc",
+        _: User = Depends(require_page("mappings")),
+    ) -> list[dict[str, Any]]:
+        store = db()
+        try:
+            if not store.get_sync_mapping(mapping_id):
+                raise HTTPException(404, "同步映射不存在")
+            return store.list_mapping_synced_files(mapping_id, sort_by, direction)
+        finally:
+            store.close()
+
+    @app.get("/api/sync-runs/{run_id}/files")
+    def run_synced_files(
+        run_id: int, sort_by: str = "synced_at", direction: str = "desc",
+        _: User = Depends(require_page("tasks")),
+    ) -> list[dict[str, Any]]:
+        store = db()
+        try:
+            if not store.get_sync_run(run_id):
+                raise HTTPException(404, "同步记录不存在")
+            return store.list_run_synced_files(run_id, sort_by, direction)
+        finally:
+            store.close()
+
     @app.post("/api/mappings/{mapping_id}/sync")
     def sync_mapping(mapping_id: int, _: User = Depends(require_page("mappings"))) -> dict[str, str]:
         task_id = app.state.tasks.submit_sync(mapping_id)

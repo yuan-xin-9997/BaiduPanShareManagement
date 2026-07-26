@@ -13,6 +13,10 @@ const shareForm = reactive({ id: null, url: '', password: '', note: '' })
 const mappingModal = ref(false)
 const mappingForm = reactive({ id: null, share_link_id: '', remote_path: '', local_path: '', storage_type: 'local', sync_strategy: 'copy_new', schedule_interval: 60, auto_sync: false, last_synced: 0 })
 const browser = reactive({ open: false, linkId: null, title: '', path: '', entries: [] })
+const syncedFiles = reactive({
+  open: false, source: '', sourceId: null, title: '', items: [],
+  sortBy: 'synced_at', direction: 'desc', loading: false, error: '',
+})
 const settings = ref(null)
 const cookieValue = ref('')
 const users = ref([])
@@ -141,6 +145,41 @@ async function probeStorage(mapping = mappingForm) { try { const result = await 
 async function syncOne(id) { try { await api(`/api/mappings/${id}/sync`, { method: 'POST' }); showToast('同步任务已提交'); await refresh() } catch (error) { showToast(error.message) } }
 async function syncAll() { try { const result = await api('/api/sync-all', { method: 'POST' }); showToast(`已提交 ${result.task_ids.length} 个任务`); await refresh() } catch (error) { showToast(error.message) } }
 async function deleteMapping(id) { if (!confirm('删除此同步映射？本地文件不会被删除。')) return; try { await api(`/api/mappings/${id}`, { method: 'DELETE' }); await refresh() } catch (error) { showToast(error.message) } }
+async function loadSyncedFiles() {
+  syncedFiles.loading = true
+  syncedFiles.error = ''
+  const endpoint = syncedFiles.source === 'mapping'
+    ? `/api/mappings/${syncedFiles.sourceId}/files`
+    : `/api/sync-runs/${syncedFiles.sourceId}/files`
+  try {
+    syncedFiles.items = await api(`${endpoint}?sort_by=${syncedFiles.sortBy}&direction=${syncedFiles.direction}`)
+  } catch (error) {
+    syncedFiles.items = []
+    syncedFiles.error = error.message
+  } finally {
+    syncedFiles.loading = false
+  }
+}
+async function openSyncedFiles(source, sourceId, title) {
+  Object.assign(syncedFiles, {
+    open: true, source, sourceId, title, items: [],
+    sortBy: 'synced_at', direction: 'desc', loading: false, error: '',
+  })
+  await loadSyncedFiles()
+}
+async function sortSyncedFiles(field) {
+  if (syncedFiles.sortBy === field) {
+    syncedFiles.direction = syncedFiles.direction === 'asc' ? 'desc' : 'asc'
+  } else {
+    syncedFiles.sortBy = field
+    syncedFiles.direction = field === 'file_name' ? 'asc' : 'desc'
+  }
+  await loadSyncedFiles()
+}
+function sortMark(field) {
+  if (syncedFiles.sortBy !== field) return '↕'
+  return syncedFiles.direction === 'asc' ? '↑' : '↓'
+}
 
 async function saveSettings() { try { await api('/api/settings', { method: 'PUT', body: JSON.stringify({ cookie: cookieValue.value }) }); cookieValue.value = ''; settings.value = await api('/api/settings'); showToast('百度网盘 Cookie 已保存') } catch (error) { showToast(error.message) } }
 function openUser(account = null) {
@@ -178,7 +217,7 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
         <section v-if="browser.open" class="drawer"><div class="drawer-head"><div><p class="eyebrow">DIRECTORY</p><h2>{{ browser.title }}</h2><div class="breadcrumbs"><button @click="browse({ id: browser.linkId, title: browser.title }, '')">根目录</button><template v-for="crumb in crumbs" :key="crumb.path"><span>/</span><button @click="browse({ id: browser.linkId, title: browser.title }, crumb.path)">{{ crumb.name }}</button></template></div></div><button class="close" @click="browser.open = false">×</button></div><table><thead><tr><th>名称</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="entry in browser.entries" :key="entry.id"><td><button v-if="entry.is_dir" class="entry" @click="browse({ id: browser.linkId, title: browser.title }, entry.path)">▰ {{ entry.name }}</button><span v-else>▤ {{ entry.name }}</span></td><td>{{ entry.is_dir ? '—' : formatSize(entry.size) }}</td><td>{{ formatTime(entry.modified_time) }}</td></tr><tr v-if="!browser.entries.length"><td colspan="3" class="muted">此目录为空</td></tr></tbody></table></section>
       </section>
 
-      <section v-if="activeView === 'mappings'" class="content"><div class="toolbar"><div class="stats"><strong>{{ state.mappings.length }}</strong><span>条同步映射</span></div><div class="button-row"><button @click="syncAll">同步全部</button><button class="primary" @click="openMapping()">＋ 新建映射</button></div></div><div v-if="!state.mappings.length" class="empty"><b>还没有同步映射</b><span>关联远端目录与本机或 NAS 目录。</span></div><div class="item-list"><article v-for="mapping in state.mappings" :key="mapping.id" class="item-card mapping"><div class="file-icon">映</div><div class="grow"><div class="item-title"><h3>{{ state.links.find(item => item.id === mapping.share_link_id)?.title || '未知分享' }}</h3><span class="pill">{{ mapping.storage_type === 'smb_mount' ? 'NAS · SMB' : '本机目录' }}</span></div><div class="route"><span>{{ mapping.remote_path }}</span><b>→</b><span>{{ mapping.local_path }}</span></div><div class="meta"><span>{{ mapping.sync_strategy }}</span><span>{{ mapping.auto_sync ? `每 ${mapping.schedule_interval} 分钟自动同步` : '手动同步' }}</span><span>上次：{{ formatTime(mapping.last_synced) }}</span></div></div><div class="actions"><button @click="probeStorage(mapping)">检测</button><button class="accent" @click="syncOne(mapping.id)">同步</button><button @click="openMapping(mapping)">编辑</button><button class="danger" @click="deleteMapping(mapping.id)">删除</button></div></article></div></section>
+      <section v-if="activeView === 'mappings'" class="content"><div class="toolbar"><div class="stats"><strong>{{ state.mappings.length }}</strong><span>条同步映射</span></div><div class="button-row"><button @click="syncAll">同步全部</button><button class="primary" @click="openMapping()">＋ 新建映射</button></div></div><div v-if="!state.mappings.length" class="empty"><b>还没有同步映射</b><span>关联远端目录与本机或 NAS 目录。</span></div><div class="item-list"><article v-for="mapping in state.mappings" :key="mapping.id" class="item-card mapping"><div class="file-icon">映</div><div class="grow"><div class="item-title"><h3>{{ state.links.find(item => item.id === mapping.share_link_id)?.title || '未知分享' }}</h3><span class="pill">{{ mapping.storage_type === 'smb_mount' ? 'NAS · SMB' : '本机目录' }}</span></div><div class="route"><span>{{ mapping.remote_path }}</span><b>→</b><span>{{ mapping.local_path }}</span></div><div class="meta"><span>{{ mapping.sync_strategy }}</span><span>{{ mapping.auto_sync ? `每 ${mapping.schedule_interval} 分钟自动同步` : '手动同步' }}</span><span>上次：{{ formatTime(mapping.last_synced) }}</span></div></div><div class="actions"><button @click="openSyncedFiles('mapping', mapping.id, `映射 #${mapping.id} 的同步文件`)">查看</button><button @click="probeStorage(mapping)">检测</button><button class="accent" @click="syncOne(mapping.id)">同步</button><button @click="openMapping(mapping)">编辑</button><button class="danger" @click="deleteMapping(mapping.id)">删除</button></div></article></div></section>
 
       <section v-if="activeView === 'tasks'" class="content">
         <div class="two-columns">
@@ -188,6 +227,7 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
             <div v-for="task in state.tasks" :key="task.id" class="log-row">
               <span :class="['status-dot', task.status]"></span>
               <div><strong>{{ task.title }}</strong><p>{{ task.message }}</p></div>
+              <button v-if="task.kind === 'sync' && task.run_id && task.has_files" class="compact-action" @click="openSyncedFiles('run', task.run_id, `${task.title} 的同步文件`)">查看文件</button>
               <time>创建：{{ formatTime(task.created_at) }}</time>
             </div>
           </div>
@@ -197,6 +237,7 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
             <div v-for="run in state.runs" :key="run.id" class="log-row">
               <span :class="['status-dot', run.status]"></span>
               <div><strong>映射 #{{ run.mapping_id }} · {{ run.trigger_type }}</strong><p>{{ run.message }}</p></div>
+              <button v-if="run.has_files" class="compact-action" @click="openSyncedFiles('run', run.id, `同步记录 #${run.id} 的文件`)">查看文件</button>
               <div class="run-times">
                 <time>开始：{{ formatTime(run.started_at) }}</time>
                 <time>完成：{{ run.finished_at ? formatTime(run.finished_at) : '进行中' }}</time>
@@ -214,6 +255,33 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
 
     <div v-if="shareModal" class="modal" @click.self="shareModal = false"><form class="modal-card" @submit.prevent="saveShare"><div class="modal-head"><div><p class="eyebrow">SHARE LINK</p><h2>{{ shareForm.id ? '编辑分享链接' : '添加分享链接' }}</h2></div><button type="button" @click="shareModal = false">×</button></div><label>分享链接<input v-model.trim="shareForm.url" required></label><label>提取码<input v-model.trim="shareForm.password" :placeholder="shareForm.id ? '留空表示不修改' : '没有则留空'"></label><label>备注<input v-model.trim="shareForm.note"></label><div class="modal-actions"><button type="button" @click="shareModal = false">取消</button><button class="primary">{{ shareForm.id ? '保存' : '添加并索引' }}</button></div></form></div>
     <div v-if="mappingModal" class="modal" @click.self="mappingModal = false"><form class="modal-card large" @submit.prevent="saveMapping"><div class="modal-head"><div><p class="eyebrow">SYNC MAPPING</p><h2>{{ mappingForm.id ? '编辑同步映射' : '新建同步映射' }}</h2></div><button type="button" @click="mappingModal = false">×</button></div><div class="form-grid"><label>分享链接<select v-model="mappingForm.share_link_id" required><option v-for="link in state.links" :key="link.id" :value="link.id">{{ link.title }}</option></select></label><label>远端目录<input v-model.trim="mappingForm.remote_path" placeholder="/资料/报告" required></label><label>目标存储<select v-model="mappingForm.storage_type"><option value="local">本机目录</option><option value="smb_mount">NAS · SMB 挂载</option></select></label><label>目标路径<input v-model.trim="mappingForm.local_path" :placeholder="mappingForm.storage_type === 'smb_mount' ? '\\\\NAS地址\\共享名\\目录' : 'E:\\Sync 或 /data/sync'" required></label><label>同步策略<select v-model="mappingForm.sync_strategy"><option value="copy_new">仅新增/更新（推荐）</option><option value="mirror">镜像</option><option value="ask">询问</option></select></label><label>自动间隔（分钟）<input v-model.number="mappingForm.schedule_interval" type="number" min="1"></label></div><label class="check"><input v-model="mappingForm.auto_sync" type="checkbox">启用自动同步</label><p v-if="probeMessage" class="probe">{{ probeMessage }}</p><div class="modal-actions"><button type="button" @click="probeStorage()">检测连接</button><button type="button" @click="mappingModal = false">取消</button><button class="primary">保存</button></div></form></div>
+    <div v-if="syncedFiles.open" class="modal" @click.self="syncedFiles.open = false">
+      <section class="modal-card file-modal">
+        <div class="modal-head">
+          <div><p class="eyebrow">SYNCED FILES</p><h2>{{ syncedFiles.title }}</h2><p class="muted">仅展示成功新增或更新到本地的文件记录</p></div>
+          <button type="button" aria-label="关闭" @click="syncedFiles.open = false">×</button>
+        </div>
+        <div v-if="syncedFiles.loading" class="empty compact">正在加载同步文件…</div>
+        <div v-else-if="syncedFiles.error" class="empty compact error-state"><b>加载失败</b><span>{{ syncedFiles.error }}</span><button @click="loadSyncedFiles">重试</button></div>
+        <div v-else-if="!syncedFiles.items.length" class="empty compact"><b>暂无文件记录</b><span>旧同步记录或尚未新增、更新文件时不会产生逐文件记录。</span></div>
+        <div v-else class="file-table-wrap">
+          <table class="file-table">
+            <thead><tr>
+              <th><button class="sort-button" @click="sortSyncedFiles('file_name')">文件名 {{ sortMark('file_name') }}</button></th>
+              <th>相对路径</th>
+              <th>同步动作</th>
+              <th><button class="sort-button" @click="sortSyncedFiles('synced_at')">同步时间 {{ sortMark('synced_at') }}</button></th>
+            </tr></thead>
+            <tbody><tr v-for="file in syncedFiles.items" :key="file.id">
+              <td><strong>{{ file.file_name }}</strong></td>
+              <td class="path-cell">{{ file.relative_path }}</td>
+              <td><span class="pill">{{ file.action === 'added' ? '新增' : '更新' }}</span></td>
+              <td>{{ formatTime(file.synced_at) }}</td>
+            </tr></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
     <div v-if="userModal" class="modal" @click.self="userModal = false"><form class="modal-card" @submit.prevent="saveUser"><div class="modal-head"><div><p class="eyebrow">ACCESS CONTROL</p><h2>{{ userForm.id ? '编辑用户' : '添加用户' }}</h2></div><button type="button" @click="userModal = false">×</button></div><label>用户名<input v-model.trim="userForm.username" :disabled="Boolean(userForm.id)" required></label><label>密码<input v-model="userForm.password" type="password" :required="!userForm.id" :placeholder="userForm.id ? '留空表示不修改' : '至少 8 个字符'"></label><label>角色<select v-model="userForm.role"><option value="user">普通用户</option><option value="admin">管理员</option></select></label><fieldset :disabled="userForm.role === 'admin'"><legend>可访问页面</legend><label v-for="page in ['shares','mappings','tasks','settings']" :key="page" class="check"><input type="checkbox" :checked="userForm.pages.includes(page)" @change="togglePage(page)">{{ pageMeta[page][0] }}</label></fieldset><div class="modal-actions"><button type="button" @click="userModal = false">取消</button><button class="primary">保存用户</button></div></form></div>
     <transition name="toast"><div v-if="toastText" class="toast">{{ toastText }}</div></transition>
   </div>

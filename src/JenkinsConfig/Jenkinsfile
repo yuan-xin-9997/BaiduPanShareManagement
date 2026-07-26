@@ -5,6 +5,15 @@ pipeline {
         DEPLOY_DIR = '/opt/BaiduPanShareManagement'
     }
     stages {
+        stage('前端构建') {
+            steps {
+                sh '''
+                    cd "$WORKSPACE/src/app/frontend"
+                    npm ci --no-audit --no-fund
+                    npm run build
+                '''
+            }
+        }
         stage('停止服务') {
             steps { sh 'if [ -x "$DEPLOY_DIR/stop.sh" ]; then "$DEPLOY_DIR/stop.sh"; fi' }
         }
