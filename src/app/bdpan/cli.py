@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import sys
@@ -31,6 +30,7 @@ from .models import FileEntry, ShareLink, SyncMapping
 from .database import Database
 from .sync import SyncManager, SyncStrategy
 from .config import load_app_config
+from .cookies import ENV_COOKIE_ID, CookieSecretStore, mask_cookie, validate_cookie_value
 
 logger = logging.getLogger("bdpan.cli")
 
@@ -41,21 +41,42 @@ def get_db() -> Database:
     return Database(str(config.database_path))
 
 
-def get_cookie() -> str:
-    """获取百度网盘 Cookie。"""
+def resolve_cookie_id(
+    link: ShareLink | None = None, cookie_id: int | None = None,
+) -> int:
+    """解析显式、链接关联、唯一持久 Cookie 或环境 Cookie。"""
     config = load_app_config()
+    store = get_db()
+    secret_store = CookieSecretStore(config.secret_file)
     try:
-        secrets_config = json.loads(config.secret_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        secrets_config = {}
-    cookie = secrets_config.get("cookie", "") or os.environ.get("BDPAN_COOKIE", "")
-    if not cookie:
+        secret_store.migrate_legacy(store)
+        resolved_id = cookie_id if cookie_id is not None else (
+            link.cookie_id if link else None
+        )
+        if resolved_id is None:
+            records = store.list_cookies()
+            resolved_id = records[0].id if len(records) == 1 else None
+        if resolved_id is None and os.environ.get("BDPAN_COOKIE"):
+            resolved_id = ENV_COOKIE_ID
+        if resolved_id is None:
+            raise ValueError
+        secret_store.get(int(resolved_id))
+        return int(resolved_id)
+    except ValueError:
         print("错误：未配置百度网盘 Cookie。")
         print("请通过以下方式设置：")
         print("  1. 环境变量: export BDPAN_COOKIE='你的Cookie'")
-        print("  2. 配置文件: bdpan config --cookie '你的Cookie'")
+        print("  2. 配置文件: bdpan config --name 名称 --cookie '你的Cookie'")
         sys.exit(1)
-    return cookie
+    finally:
+        store.close()
+
+
+def get_cookie(link: ShareLink | None = None, cookie_id: int | None = None) -> str:
+    """获取百度网盘 Cookie。"""
+    config = load_app_config()
+    resolved_id = resolve_cookie_id(link, cookie_id)
+    return CookieSecretStore(config.secret_file).get(resolved_id)
 
 
 # ------------------------------------------------------------------
@@ -70,7 +91,8 @@ def cmd_add(args: argparse.Namespace) -> None:
     password = args.password or ""
 
     # 尝试解析链接
-    cookie = get_cookie()
+    cookie_id = resolve_cookie_id(cookie_id=args.cookie_id)
+    cookie = get_cookie(cookie_id=cookie_id)
     client = BaiduPanClient(cookie=cookie)
 
     print(f"正在解析分享链接: {url}")
@@ -93,6 +115,7 @@ def cmd_add(args: argparse.Namespace) -> None:
         created_at=time.time(),
         last_checked=time.time(),
         note=args.note or "",
+        cookie_id=cookie_id,
     )
     link_id = db.add_share_link(link)
 
@@ -194,7 +217,7 @@ def cmd_refresh(args: argparse.Namespace) -> None:
         print(f"未找到 ID 为 {args.link_id} 的分享链接")
         sys.exit(1)
 
-    cookie = get_cookie()
+    cookie = get_cookie(link)
     client = BaiduPanClient(cookie=cookie)
 
     print(f"正在刷新: {link.title}")
@@ -322,7 +345,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
     if not link:
         print("映射关联的分享链接不存在")
         sys.exit(1)
-    client = BaiduPanClient(cookie=get_cookie())
+    client = BaiduPanClient(cookie=get_cookie(link))
     try:
         client.prepare_share_download(link.url, link.password)
         manager = SyncManager(db, client.download_share_file)
@@ -349,7 +372,7 @@ def cmd_sync_all(args: argparse.Namespace) -> None:
             print(f"  [{mapping.id}] 分享链接不存在，已跳过")
             continue
         from .client import BaiduPanClient
-        client = BaiduPanClient(cookie=get_cookie())
+        client = BaiduPanClient(cookie=get_cookie(link))
         try:
             client.prepare_share_download(link.url, link.password)
             manager = SyncManager(db, client.download_share_file)
@@ -362,24 +385,31 @@ def cmd_sync_all(args: argparse.Namespace) -> None:
 def cmd_config(args: argparse.Namespace) -> None:
     """查看或设置配置。"""
     config = load_app_config()
-    try:
-        secrets_config = json.loads(config.secret_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        secrets_config = {}
+    db = get_db()
+    secret_store = CookieSecretStore(config.secret_file)
+    secret_store.migrate_legacy(db)
     if args.cookie:
-        secrets_config["cookie"] = args.cookie
-        config.secret_file.parent.mkdir(parents=True, exist_ok=True)
-        config.secret_file.write_text(
-            json.dumps(secrets_config, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        value = validate_cookie_value(args.cookie)
+        name = (args.name or "默认 Cookie").strip()
+        record = db.get_cookie_by_name(name)
+        if record and record.id is not None:
+            secret_store.set(record.id, value)
+            db.update_cookie(record.id, name, mask_cookie(value))
+        else:
+            cookie_id = db.add_cookie(name, mask_cookie(value))
+            secret_store.set(cookie_id, value)
         print("✅ Cookie 已保存")
+        db.close()
         return
 
     print("当前配置:")
     for k, v in config.public_dict().items():
         print(f"  {k}: {v}")
-    print(f"  cookie: {'已配置' if secrets_config.get('cookie') else '未配置'}")
+    records = db.list_cookies()
+    print(f"  cookies: {len(records)} 条")
+    for record in records:
+        print(f"    [{record.id}] {record.name} ({record.status})")
+    db.close()
 
 
 # ------------------------------------------------------------------
@@ -398,6 +428,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("url", help="分享链接 URL")
     p.add_argument("password", nargs="?", default="", help="提取码")
     p.add_argument("--note", default="", help="备注")
+    p.add_argument("--cookie-id", type=int, help="关联的 Cookie ID")
     p.set_defaults(func=cmd_add)
 
     # list
@@ -445,6 +476,7 @@ def build_parser() -> argparse.ArgumentParser:
     # config
     p = sub.add_parser("config", help="查看或设置配置")
     p.add_argument("--cookie", help="设置百度网盘 Cookie")
+    p.add_argument("--name", help="Cookie 名称")
     p.set_defaults(func=cmd_config)
 
     return parser

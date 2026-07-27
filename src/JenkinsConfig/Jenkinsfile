@@ -41,6 +41,7 @@ pipeline {
                     .venv/bin/python -m pip install --upgrade pip setuptools wheel
                     .venv/bin/python -m pip install --no-build-isolation -e '.[web,dev]'
                     PYTHONPATH=src/app .venv/bin/python -m pytest -q
+                    PYTHONPATH=src/app .venv/bin/python -m compileall -q src/app/bdpan
                 '''
             }
         }
