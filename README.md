@@ -11,7 +11,7 @@ Windows、Linux、macOS 挂载的 SMB NAS。
 | 分享链接 | 添加、编辑、删除、刷新分享链接，逐级浏览远端目录 |
 | 同步映射 | 关联远端目录与本机/SMB 目录，检测连接、执行同步并查看已同步文件 |
 | 任务中心 | 当前任务仅显示排队或运行中的任务；同步历史可查看每次同步的文件、时间和耗时 |
-| 系统配置 | 查看脱敏运行配置，维护百度网盘 Cookie |
+| 系统配置 | 查看脱敏运行配置，维护、校验多条百度网盘 Cookie |
 | 权限管理 | 管理用户密码、管理员/普通用户角色及可访问页面 |
 
 ## 目录结构
@@ -89,14 +89,20 @@ admin / admin123
 | `task_workers` | 后台任务并发数 |
 | `scheduler_poll_seconds` | 自动同步调度检查间隔 |
 
-环境变量 `BDPAN_CONFIG` 可指向其他配置文件，`BDPAN_COOKIE` 可临时覆盖文件中的
-百度网盘 Cookie。敏感信息不写入 `app.json`。
+环境变量 `BDPAN_CONFIG` 可指向其他配置文件。`BDPAN_COOKIE` 可提供一条只读兼容
+Cookie，页面不会把环境变量秘密复制到磁盘。敏感信息不写入 `app.json`。
 
 ## 配置百度网盘 Cookie
 
-登录百度网盘后，在浏览器开发者工具的 Network 请求头中复制完整 Cookie，并在
-“系统配置”页面保存。Cookie 至少应包含有效的登录字段。Cookie 等同登录凭据，
-不要提交到 Git 或发送给他人。
+登录百度网盘后，在浏览器开发者工具的 Network 请求头中复制完整 Cookie，并由管理员
+在“系统配置”页面添加。系统支持多条具名 Cookie；每条分享链接在新增或编辑时必须选择
+一条 Cookie，刷新、浏览和同步均使用该关联凭据。Cookie 至少应包含 `BDUSS`。
+Cookie 等同登录凭据，不要提交到 Git 或发送给他人。
+
+配置页只显示 Cookie 包含的字段摘要、添加时间、最近校验时间和状态，不返回原文。
+“未知”表示尚无明确结论或最近请求受网络/风控影响，“有效”和“无效”分别表示最近一次
+认证得到明确成功或失败。仍被分享链接引用的 Cookie 不能删除，应先重新关联。
+普通用户如有“系统配置”页面权限可以查看脱敏元数据，但只有管理员可以变更和校验。
 
 如果提示“获取 bdstoken 失败”，请先在浏览器重新登录 `pan.baidu.com`，再从任意
 网盘请求的 Request Headers 中复制完整的 `Cookie` 请求头值。至少应包含有效的
@@ -185,7 +191,8 @@ python run.py --config config/app.json
 ## CLI
 
 ```bash
-bdpan add "分享链接" "提取码"
+bdpan config --name "主账号" --cookie "你的百度网盘Cookie"
+bdpan add "分享链接" "提取码" --cookie-id 1
 bdpan list
 bdpan tree 1
 bdpan refresh 1
@@ -209,8 +216,10 @@ bdpan sync-all
 Jenkinsfile 位于
 `src/JenkinsConfig/Jenkinsfile`。
 
-数据库升级由应用启动时自动幂等执行，会创建同步文件事件表及索引，不会删除或覆盖
-现有映射和同步历史。回滚旧版本时可保留该表，旧版本会自动忽略。
+数据库升级由应用启动时自动幂等执行，会创建 Cookie 元数据和同步文件事件表及索引，
+不会删除或覆盖现有分享、映射和同步历史。旧版 `secrets.json.cookie` 会迁移为“默认
+Cookie”，现有分享链接自动关联到它；重复启动不会创建重复记录。部署更新必须保留整个
+`data` 目录。
 
 ## 设计与需求文档
 

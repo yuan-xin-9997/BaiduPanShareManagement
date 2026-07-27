@@ -11,7 +11,9 @@ from dataclasses import asdict, dataclass
 from typing import Callable
 
 from .client import BaiduPanClient
+from .cookies import redact_sensitive
 from .database import Database
+from .models import ShareLink
 from .sync import SyncManager
 from .storage import ensure_storage_ready
 
@@ -35,11 +37,13 @@ class TaskManager:
     """进程内任务队列；每个任务使用独立数据库连接。"""
 
     def __init__(
-        self, db_path: str, cookie_getter: Callable[[], str],
+        self, db_path: str, cookie_getter: Callable[[ShareLink], str],
+        cookie_updater: Callable[[ShareLink, str], None] | None = None,
         max_workers: int = 2, scheduler_poll_seconds: int = 15,
     ) -> None:
         self.db_path = db_path
         self.cookie_getter = cookie_getter
+        self.cookie_updater = cookie_updater
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bdpan")
         self.scheduler_poll_seconds = scheduler_poll_seconds
         self.tasks: dict[str, TaskState] = {}
@@ -75,9 +79,10 @@ class TaskManager:
                     finished_at=time.time(),
                 )
             except Exception as exc:
+                safe_error = redact_sensitive(exc)
                 logger.exception("后台任务失败: %s", title)
                 self._update(
-                    task_id, status="failed", message=str(exc),
+                    task_id, status="failed", message=safe_error,
                     finished_at=time.time(),
                 )
 
@@ -108,7 +113,12 @@ class TaskManager:
                 db.update_sync_run(run_id, "running", "正在检查目标存储")
                 progress("正在检查目标存储连接")
                 ensure_storage_ready(mapping.local_path, mapping.storage_type)
-                client = BaiduPanClient(cookie=self.cookie_getter())
+                try:
+                    cookie_snapshot = self.cookie_getter(link)
+                except TypeError:
+                    # 兼容旧的嵌入式调用方；Web 与 CLI 均传入按链接解析函数。
+                    cookie_snapshot = self.cookie_getter()  # type: ignore[call-arg]
+                client = BaiduPanClient(cookie=cookie_snapshot)
                 try:
                     client.prepare_share_download(link.url, link.password)
                     manager = SyncManager(
@@ -117,6 +127,8 @@ class TaskManager:
                     )
                     result = manager.sync_mapping(mapping, entries)
                 finally:
+                    if self.cookie_updater and client.cookie != cookie_snapshot:
+                        self.cookie_updater(link, client.cookie)
                     client.close()
                 message = result.summary()
                 if result.errors:
@@ -134,7 +146,7 @@ class TaskManager:
                 return message
             except Exception as exc:
                 if run_id is not None:
-                    db.update_sync_run(run_id, "failed", str(exc))
+                    db.update_sync_run(run_id, "failed", redact_sensitive(exc))
                 raise
             finally:
                 db.close()

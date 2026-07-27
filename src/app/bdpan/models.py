@@ -23,6 +23,21 @@ class User:
 
 
 @dataclass
+class CookieRecord:
+    """百度网盘 Cookie 的非敏感元数据。"""
+
+    id: int | None
+    name: str
+    masked_value: str
+    status: str
+    created_at: float
+    updated_at: float
+    last_validated_at: float = 0
+    last_validation_error: str = ""
+    readonly: bool = False
+
+
+@dataclass
 class ShareLink:
     """分享链接记录"""
 
@@ -37,6 +52,7 @@ class ShareLink:
     created_at: float       # 添加时间
     last_checked: float     # 最后检查时间
     note: str               # 用户备注
+    cookie_id: int | None = None  # 关联的百度网盘 Cookie
 
 
 @dataclass

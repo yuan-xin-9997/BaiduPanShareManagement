@@ -121,13 +121,17 @@ def test_task_manager_records_files_and_hides_completed_tasks(tmp_path: Path) ->
     client = MagicMock()
     sync_manager = MagicMock()
     sync_manager.sync_mapping.return_value = result
+    resolved_links = []
 
     with (
         patch("bdpan.web_tasks.ensure_storage_ready"),
-        patch("bdpan.web_tasks.BaiduPanClient", return_value=client),
+        patch("bdpan.web_tasks.BaiduPanClient", return_value=client) as client_factory,
         patch("bdpan.web_tasks.SyncManager", return_value=sync_manager),
     ):
-        manager = TaskManager(str(db_path), lambda: "cookie")
+        manager = TaskManager(
+            str(db_path),
+            lambda link: resolved_links.append(link) or "cookie-for-link",
+        )
         task_id = manager.submit_sync(mapping_id)
         assert task_id
         deadline = time.time() + 3
@@ -139,6 +143,9 @@ def test_task_manager_records_files_and_hides_completed_tasks(tmp_path: Path) ->
         assert manager.tasks[task_id].has_files is True
         assert manager.list_tasks() == []
         manager.close()
+        assert len(resolved_links) == 1
+        assert resolved_links[0].id is not None
+        client_factory.assert_called_once_with(cookie="cookie-for-link")
 
     with Database(str(db_path)) as store:
         runs = store.list_sync_runs()

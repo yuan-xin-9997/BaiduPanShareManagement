@@ -27,8 +27,12 @@ from .auth import (
     PAGES, password_hash, password_valid, read_password_file,
     sync_password_file, user_payload, write_password_file,
 )
-from .client import BaiduPanClient
+from .client import BaiduPanClient, BaiduPanError
 from .config import AppConfig, load_app_config
+from .cookies import (
+    ENV_COOKIE_ID, CookieSecretStore, environment_cookie_record, mask_cookie,
+    redact_sensitive, validate_cookie_value,
+)
 from .database import Database
 from .models import FileEntry, ShareLink, SyncMapping, User
 from .storage import probe_storage, validate_storage_path
@@ -118,18 +122,34 @@ def create_app(
         if legacy_cookie:
             secrets_config["cookie"] = legacy_cookie
         _write_json(cfg.secret_file, secrets_config)
+    cookie_secrets = CookieSecretStore(cfg.secret_file)
 
     def secret_values() -> dict[str, Any]:
         return _read_json(cfg.secret_file)
 
-    def cookie() -> str:
-        value = secret_values().get("cookie", "") or os.environ.get("BDPAN_COOKIE", "")
-        if not value:
-            raise ValueError("尚未配置百度网盘 Cookie")
-        return str(value)
-
     def db() -> Database:
         return Database(str(cfg.database_path))
+
+    def cookie_for_link(link: ShareLink) -> str:
+        cookie_id = link.cookie_id
+        if cookie_id is None and os.environ.get("BDPAN_COOKIE"):
+            cookie_id = ENV_COOKIE_ID
+        if cookie_id is None:
+            raise ValueError("分享链接尚未关联 Cookie")
+        return cookie_secrets.get(cookie_id)
+
+    def persist_client_cookie(link: ShareLink, value: str) -> None:
+        if link.cookie_id not in {None, ENV_COOKIE_ID}:
+            cookie_secrets.set(int(link.cookie_id), value)
+
+    migration_store = db()
+    try:
+        cookie_secrets.migrate_legacy(migration_store)
+        orphan_ids = cookie_secrets.list_orphan_ids(migration_store)
+        if orphan_ids:
+            logger.warning("secrets.json 存在未关联的 Cookie ID: %s", orphan_ids)
+    finally:
+        migration_store.close()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -139,7 +159,8 @@ def create_app(
         finally:
             store.close()
         app.state.tasks = TaskManager(
-            str(cfg.database_path), cookie, max_workers=cfg.task_workers,
+            str(cfg.database_path), cookie_for_link, persist_client_cookie,
+            max_workers=cfg.task_workers,
             scheduler_poll_seconds=cfg.scheduler_poll_seconds,
         )
         yield
@@ -261,30 +282,164 @@ def create_app(
                 if "mappings" in pages else [],
                 "tasks": app.state.tasks.list_tasks() if "tasks" in pages else [],
                 "runs": store.list_sync_runs() if "tasks" in pages else [],
-                "cookie_configured": bool(cookie()) if (
-                    secret_values().get("cookie") or os.environ.get("BDPAN_COOKIE")
-                ) else False,
+                "cookie_options": [
+                    {"id": item.id, "name": item.name, "status": item.status}
+                    for item in store.list_cookies()
+                ] + ([
+                    {"id": ENV_COOKIE_ID, "name": "环境变量 Cookie",
+                     "status": "unknown", "readonly": True}
+                ] if os.environ.get("BDPAN_COOKIE") else [])
+                if "shares" in pages else [],
+                "cookie_configured": bool(
+                    store.list_cookies() or os.environ.get("BDPAN_COOKIE")
+                ),
             }
         finally:
             store.close()
 
     @app.get("/api/settings")
     def get_settings(_: User = Depends(require_page("settings"))) -> dict[str, Any]:
-        return {
-            "config": cfg.public_dict(),
-            "cookie_configured": bool(
-                secret_values().get("cookie") or os.environ.get("BDPAN_COOKIE")
-            ),
-        }
+        store = db()
+        try:
+            cookies = [asdict(item) for item in store.list_cookies()]
+            environment = environment_cookie_record()
+            if environment:
+                cookies.append(asdict(environment))
+            return {
+                "config": cfg.public_dict(), "cookies": cookies,
+                "cookie_configured": bool(cookies),
+            }
+        finally:
+            store.close()
 
     @app.put("/api/settings")
-    async def update_settings(request: Request, _: User = Depends(require_page("settings"))) -> dict[str, bool]:
+    async def update_settings(_: Request, __: User = Depends(require_admin)) -> dict[str, bool]:
+        raise HTTPException(410, "请使用多 Cookie 管理接口")
+
+    @app.get("/api/cookies")
+    def list_cookies(_: User = Depends(require_page("settings"))) -> list[dict[str, Any]]:
+        return get_settings(_)["cookies"]
+
+    @app.get("/api/cookies/{cookie_id}")
+    def get_cookie_metadata(
+        cookie_id: int, _: User = Depends(require_page("settings")),
+    ) -> dict[str, Any]:
+        if cookie_id == ENV_COOKIE_ID:
+            item = environment_cookie_record()
+            if item:
+                return asdict(item)
+        store = db()
+        try:
+            item = store.get_cookie(cookie_id)
+            if not item:
+                raise HTTPException(404, "Cookie 不存在")
+            return asdict(item)
+        finally:
+            store.close()
+
+    @app.post("/api/cookies")
+    async def add_cookie(
+        request: Request, _: User = Depends(require_admin),
+    ) -> dict[str, int]:
         body = await request.json()
-        values = secret_values()
-        if str(body.get("cookie", "")).strip():
-            values["cookie"] = str(body["cookie"]).strip()
-        _write_json(cfg.secret_file, values)
-        return {"ok": True}
+        name = str(body.get("name", "")).strip()
+        if not name:
+            raise HTTPException(400, "Cookie 名称不能为空")
+        try:
+            value = validate_cookie_value(str(body.get("cookie", "")))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        store = db()
+        cookie_id: int | None = None
+        try:
+            try:
+                cookie_id = store.add_cookie(name, mask_cookie(value))
+            except __import__("sqlite3").IntegrityError as exc:
+                raise HTTPException(409, "Cookie 名称已存在") from exc
+            cookie_secrets.set(cookie_id, value)
+            return {"id": cookie_id}
+        except Exception:
+            if cookie_id is not None:
+                store.delete_cookie(cookie_id)
+            raise
+        finally:
+            store.close()
+
+    @app.put("/api/cookies/{cookie_id}")
+    async def edit_cookie(
+        cookie_id: int, request: Request, _: User = Depends(require_admin),
+    ) -> dict[str, bool]:
+        if cookie_id == ENV_COOKIE_ID:
+            raise HTTPException(400, "环境变量 Cookie 为只读")
+        body = await request.json()
+        store = db()
+        try:
+            current = store.get_cookie(cookie_id)
+            if not current:
+                raise HTTPException(404, "Cookie 不存在")
+            name = str(body.get("name", current.name)).strip()
+            if not name:
+                raise HTTPException(400, "Cookie 名称不能为空")
+            raw = str(body.get("cookie", "")).strip()
+            value = validate_cookie_value(raw) if raw else None
+            if value:
+                cookie_secrets.set(cookie_id, value)
+            try:
+                store.update_cookie(
+                    cookie_id, name, mask_cookie(value) if value else None
+                )
+            except __import__("sqlite3").IntegrityError as exc:
+                raise HTTPException(409, "Cookie 名称已存在") from exc
+            return {"ok": True}
+        finally:
+            store.close()
+
+    @app.delete("/api/cookies/{cookie_id}")
+    def delete_cookie(
+        cookie_id: int, _: User = Depends(require_admin),
+    ) -> dict[str, bool]:
+        if cookie_id == ENV_COOKIE_ID:
+            raise HTTPException(400, "环境变量 Cookie 为只读")
+        store = db()
+        try:
+            if not store.get_cookie(cookie_id):
+                raise HTTPException(404, "Cookie 不存在")
+            if store.cookie_reference_count(cookie_id):
+                raise HTTPException(409, "Cookie 正被分享链接使用，请先重新关联")
+            store.delete_cookie(cookie_id)
+            cookie_secrets.delete(cookie_id)
+            return {"ok": True}
+        finally:
+            store.close()
+
+    @app.post("/api/cookies/{cookie_id}/validate")
+    def validate_cookie(
+        cookie_id: int, _: User = Depends(require_admin),
+    ) -> dict[str, Any]:
+        if cookie_id == ENV_COOKIE_ID:
+            raise HTTPException(400, "环境变量 Cookie 为只读")
+        store = db()
+        try:
+            item = store.get_cookie(cookie_id)
+            if not item:
+                raise HTTPException(404, "Cookie 不存在")
+            client = BaiduPanClient(cookie=cookie_secrets.get(cookie_id))
+            try:
+                client.get_bdstoken()
+                store.update_cookie_status(cookie_id, "valid")
+                return {"status": "valid", "message": "Cookie 有效"}
+            except BaiduPanError as exc:
+                message = redact_sensitive(exc)
+                status = "invalid" if exc.code == -4 else None
+                store.update_cookie_status(cookie_id, status, message)
+                return {
+                    "status": status or item.status, "message": message,
+                    "conclusive": status is not None,
+                }
+            finally:
+                client.close()
+        finally:
+            store.close()
 
     @app.get("/api/users")
     def list_users(_: User = Depends(require_admin)) -> list[dict[str, Any]]:
@@ -380,19 +535,36 @@ def create_app(
         url, password, note = body.get("url", ""), body.get("password", ""), body.get("note", "")
         if not url:
             raise HTTPException(400, "分享链接不能为空")
+        try:
+            cookie_id = int(body["cookie_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(400, "请选择 Cookie") from exc
+        store = db()
+        try:
+            if cookie_id == ENV_COOKIE_ID:
+                if not os.environ.get("BDPAN_COOKIE"):
+                    raise HTTPException(400, "环境变量 Cookie 不存在")
+            elif not store.get_cookie(cookie_id):
+                raise HTTPException(400, "Cookie 不存在")
+            cookie_snapshot = cookie_secrets.get(cookie_id)
+        finally:
+            store.close()
 
         def work(progress):
             progress("正在读取百度网盘目录")
-            client = BaiduPanClient(cookie=cookie())
+            client = BaiduPanClient(cookie=cookie_snapshot)
             try:
                 info = client.parse_share(url, password)
             finally:
+                if cookie_id != ENV_COOKIE_ID and client.cookie != cookie_snapshot:
+                    cookie_secrets.set(cookie_id, client.cookie)
                 client.close()
             store = db()
             try:
                 link_id = store.add_share_link(ShareLink(
                     None, url, info.surl, password, info.title, info.share_id,
                     info.share_uk, "active", time.time(), time.time(), note,
+                    cookie_id,
                 ))
                 store.add_file_entries([_entry(link_id, item) for item in info.files])
             finally:
@@ -411,6 +583,17 @@ def create_app(
             for field in ("url", "password", "note"):
                 if field in body:
                     setattr(link, field, str(body[field]))
+            if "cookie_id" in body:
+                try:
+                    cookie_id = int(body["cookie_id"])
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(400, "Cookie 无效") from exc
+                if cookie_id == ENV_COOKIE_ID:
+                    if not os.environ.get("BDPAN_COOKIE"):
+                        raise HTTPException(400, "环境变量 Cookie 不存在")
+                elif not store.get_cookie(cookie_id):
+                    raise HTTPException(400, "Cookie 不存在")
+                link.cookie_id = cookie_id
             store.update_share_link(link)
             return {"ok": True}
         finally:
@@ -433,11 +616,14 @@ def create_app(
             store.close()
             if not link:
                 raise ValueError("分享链接不存在")
+            cookie_snapshot = cookie_for_link(link)
             progress("正在重新读取远端目录")
-            client = BaiduPanClient(cookie=cookie())
+            client = BaiduPanClient(cookie=cookie_snapshot)
             try:
                 info = client.parse_share(link.url, link.password)
             finally:
+                if client.cookie != cookie_snapshot:
+                    persist_client_cookie(link, client.cookie)
                 client.close()
             store = db()
             try:

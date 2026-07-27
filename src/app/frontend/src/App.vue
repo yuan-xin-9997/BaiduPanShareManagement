@@ -4,12 +4,12 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 const bootstrap = ref(null)
 const user = ref(null)
 const activeView = ref('shares')
-const state = reactive({ links: [], mappings: [], tasks: [], runs: [], cookie_configured: false })
+const state = reactive({ links: [], mappings: [], tasks: [], runs: [], cookie_options: [], cookie_configured: false })
 const loginForm = reactive({ username: '', password: '' })
 const loginError = ref('')
 const toastText = ref('')
 const shareModal = ref(false)
-const shareForm = reactive({ id: null, url: '', password: '', note: '' })
+const shareForm = reactive({ id: null, url: '', password: '', note: '', cookie_id: '' })
 const mappingModal = ref(false)
 const mappingForm = reactive({ id: null, share_link_id: '', remote_path: '', local_path: '', storage_type: 'local', sync_strategy: 'copy_new', schedule_interval: 60, auto_sync: false, last_synced: 0 })
 const browser = reactive({ open: false, linkId: null, title: '', path: '', entries: [] })
@@ -18,7 +18,8 @@ const syncedFiles = reactive({
   sortBy: 'synced_at', direction: 'desc', loading: false, error: '',
 })
 const settings = ref(null)
-const cookieValue = ref('')
+const cookieModal = ref(false)
+const cookieForm = reactive({ id: null, name: '', cookie: '' })
 const users = ref([])
 const userModal = ref(false)
 const userForm = reactive({ id: null, username: '', password: '', role: 'user', pages: ['shares', 'mappings', 'tasks'] })
@@ -106,11 +107,11 @@ async function switchView(view) {
 }
 
 function openShare(link = null) {
-  Object.assign(shareForm, { id: link?.id || null, url: link?.url || '', password: '', note: link?.note || '' })
+  Object.assign(shareForm, { id: link?.id || null, url: link?.url || '', password: '', note: link?.note || '', cookie_id: link?.cookie_id ?? state.cookie_options[0]?.id ?? '' })
   shareModal.value = true
 }
 async function saveShare() {
-  const body = { url: shareForm.url, note: shareForm.note }
+  const body = { url: shareForm.url, note: shareForm.note, cookie_id: Number(shareForm.cookie_id) }
   if (!shareForm.id || shareForm.password) body.password = shareForm.password
   try {
     await api(shareForm.id ? `/api/shares/${shareForm.id}` : '/api/shares', { method: shareForm.id ? 'PUT' : 'POST', body: JSON.stringify(body) })
@@ -181,7 +182,18 @@ function sortMark(field) {
   return syncedFiles.direction === 'asc' ? '↑' : '↓'
 }
 
-async function saveSettings() { try { await api('/api/settings', { method: 'PUT', body: JSON.stringify({ cookie: cookieValue.value }) }); cookieValue.value = ''; settings.value = await api('/api/settings'); showToast('百度网盘 Cookie 已保存') } catch (error) { showToast(error.message) } }
+function openCookie(item = null) { Object.assign(cookieForm, { id: item?.id ?? null, name: item?.name || '', cookie: '' }); cookieModal.value = true }
+async function reloadSettings() { settings.value = await api('/api/settings'); await refresh() }
+async function saveCookie() {
+  try {
+    const body = { name: cookieForm.name }; if (cookieForm.cookie) body.cookie = cookieForm.cookie
+    await api(cookieForm.id === null ? '/api/cookies' : `/api/cookies/${cookieForm.id}`, { method: cookieForm.id === null ? 'POST' : 'PUT', body: JSON.stringify(body) })
+    cookieModal.value = false; await reloadSettings(); showToast('Cookie 已保存')
+  } catch (error) { showToast(error.message) }
+}
+async function validateCookie(id) { try { const result = await api(`/api/cookies/${id}/validate`, { method: 'POST' }); await reloadSettings(); showToast(result.message) } catch (error) { showToast(error.message) } }
+async function deleteCookie(id) { if (!confirm('删除此 Cookie？已关联分享链接时系统会拒绝删除。')) return; try { await api(`/api/cookies/${id}`, { method: 'DELETE' }); await reloadSettings() } catch (error) { showToast(error.message) } }
+function cookieStatus(status) { return ({ valid: '有效', invalid: '无效', unknown: '未知' })[status] || status }
 function openUser(account = null) {
   Object.assign(userForm, { id: account?.id || null, username: account?.username || '', password: '', role: account?.role || 'user', pages: [...(account?.pages || ['shares', 'mappings', 'tasks'])] })
   userModal.value = true
@@ -213,7 +225,7 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
       <section v-if="activeView === 'shares'" class="content">
         <div class="toolbar"><div class="stats"><strong>{{ state.links.length }}</strong><span>个分享链接</span></div><button class="primary" @click="openShare()">＋ 添加链接</button></div>
         <div v-if="!state.links.length" class="empty"><b>还没有分享链接</b><span>添加一个百度网盘分享链接，系统会自动建立目录索引。</span></div>
-        <div v-else class="item-list"><article v-for="link in state.links" :key="link.id" class="item-card"><div class="file-icon">链</div><div class="grow"><div class="item-title"><h3>{{ link.title || link.url }}</h3><span :class="['pill', link.status]">{{ link.status }}</span></div><p>{{ link.url }}</p><div class="meta"><span>{{ link.file_count }} 个条目</span><span>更新于 {{ formatTime(link.last_checked) }}</span><span v-if="link.note">{{ link.note }}</span></div></div><div class="actions"><button @click="browse(link)">浏览</button><button @click="refreshShare(link.id)">刷新</button><button @click="openShare(link)">编辑</button><button class="danger" @click="deleteShare(link.id)">删除</button></div></article></div>
+        <div v-else class="item-list"><article v-for="link in state.links" :key="link.id" class="item-card"><div class="file-icon">链</div><div class="grow"><div class="item-title"><h3>{{ link.title || link.url }}</h3><span :class="['pill', link.status]">{{ link.status }}</span></div><p>{{ link.url }}</p><div class="meta"><span>{{ link.file_count }} 个条目</span><span>更新于 {{ formatTime(link.last_checked) }}</span><span>Cookie：{{ state.cookie_options.find(item => item.id === link.cookie_id)?.name || '未关联' }}</span><span v-if="link.note">{{ link.note }}</span></div></div><div class="actions"><button @click="browse(link)">浏览</button><button @click="refreshShare(link.id)">刷新</button><button @click="openShare(link)">编辑</button><button class="danger" @click="deleteShare(link.id)">删除</button></div></article></div>
         <section v-if="browser.open" class="drawer"><div class="drawer-head"><div><p class="eyebrow">DIRECTORY</p><h2>{{ browser.title }}</h2><div class="breadcrumbs"><button @click="browse({ id: browser.linkId, title: browser.title }, '')">根目录</button><template v-for="crumb in crumbs" :key="crumb.path"><span>/</span><button @click="browse({ id: browser.linkId, title: browser.title }, crumb.path)">{{ crumb.name }}</button></template></div></div><button class="close" @click="browser.open = false">×</button></div><table><thead><tr><th>名称</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="entry in browser.entries" :key="entry.id"><td><button v-if="entry.is_dir" class="entry" @click="browse({ id: browser.linkId, title: browser.title }, entry.path)">▰ {{ entry.name }}</button><span v-else>▤ {{ entry.name }}</span></td><td>{{ entry.is_dir ? '—' : formatSize(entry.size) }}</td><td>{{ formatTime(entry.modified_time) }}</td></tr><tr v-if="!browser.entries.length"><td colspan="3" class="muted">此目录为空</td></tr></tbody></table></section>
       </section>
 
@@ -248,12 +260,13 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
         </div>
       </section>
 
-      <section v-if="activeView === 'settings'" class="content"><div class="settings-grid"><div class="panel"><div class="panel-head"><h2>运行配置</h2><span>只读</span></div><dl v-if="settings"><template v-for="(value, key) in settings.config" :key="key"><dt>{{ key }}</dt><dd>{{ value }}</dd></template></dl></div><div class="panel"><div class="panel-head"><h2>百度网盘凭据</h2><span :class="['pill', settings?.cookie_configured ? 'active' : '']">{{ settings?.cookie_configured ? '已配置' : '未配置' }}</span></div><p class="muted">Cookie 仅保存在服务端 secrets.json，不会返回浏览器。</p><label>完整 Cookie<textarea v-model="cookieValue" rows="9" placeholder="粘贴包含 BDUSS、STOKEN 等字段的 Cookie"></textarea></label><button class="primary" @click="saveSettings">保存凭据</button></div></div></section>
+      <section v-if="activeView === 'settings'" class="content"><div class="settings-grid"><div class="panel"><div class="panel-head"><h2>运行配置</h2><span>只读</span></div><dl v-if="settings"><template v-for="(value, key) in settings.config" :key="key"><dt>{{ key }}</dt><dd>{{ value }}</dd></template></dl></div><div class="panel cookie-panel"><div class="panel-head"><div><h2>百度网盘凭据</h2><p class="muted">原文仅保存在服务端，不会返回浏览器。</p></div><button v-if="user.role === 'admin'" class="primary" @click="openCookie()">＋ 添加 Cookie</button></div><div v-if="!settings?.cookies?.length" class="empty compact">尚未配置 Cookie</div><article v-for="item in settings?.cookies || []" :key="item.id" class="cookie-row"><div class="grow"><div class="item-title"><h3>{{ item.name }}</h3><span :class="['pill', item.status]">{{ cookieStatus(item.status) }}</span><span v-if="item.readonly" class="pill">只读</span></div><p>{{ item.masked_value }}</p><div class="meta"><span>添加：{{ formatTime(item.created_at) }}</span><span>校验：{{ formatTime(item.last_validated_at) }}</span></div><p v-if="item.last_validation_error" class="error">{{ item.last_validation_error }}</p></div><div v-if="user.role === 'admin' && !item.readonly" class="actions"><button @click="validateCookie(item.id)">校验</button><button @click="openCookie(item)">编辑</button><button class="danger" @click="deleteCookie(item.id)">删除</button></div></article></div></div></section>
 
       <section v-if="activeView === 'users'" class="content"><div class="toolbar"><div class="stats"><strong>{{ users.length }}</strong><span>个系统用户</span></div><button class="primary" @click="openUser()">＋ 添加用户</button></div><div class="panel"><table><thead><tr><th>用户</th><th>角色</th><th>可访问页面</th><th>更新时间</th><th></th></tr></thead><tbody><tr v-for="account in users" :key="account.id"><td><strong>{{ account.username }}</strong></td><td><span class="pill">{{ account.role === 'admin' ? '管理员' : '普通用户' }}</span></td><td><div class="tags"><span v-for="page in account.pages" :key="page">{{ pageMeta[page]?.[0] }}</span></div></td><td>{{ formatTime(account.updated_at) }}</td><td><div class="actions"><button @click="openUser(account)">编辑</button><button class="danger" :disabled="account.id === user.id" @click="deleteUser(account.id)">删除</button></div></td></tr></tbody></table></div></section>
     </section>
 
-    <div v-if="shareModal" class="modal" @click.self="shareModal = false"><form class="modal-card" @submit.prevent="saveShare"><div class="modal-head"><div><p class="eyebrow">SHARE LINK</p><h2>{{ shareForm.id ? '编辑分享链接' : '添加分享链接' }}</h2></div><button type="button" @click="shareModal = false">×</button></div><label>分享链接<input v-model.trim="shareForm.url" required></label><label>提取码<input v-model.trim="shareForm.password" :placeholder="shareForm.id ? '留空表示不修改' : '没有则留空'"></label><label>备注<input v-model.trim="shareForm.note"></label><div class="modal-actions"><button type="button" @click="shareModal = false">取消</button><button class="primary">{{ shareForm.id ? '保存' : '添加并索引' }}</button></div></form></div>
+    <div v-if="shareModal" class="modal" @click.self="shareModal = false"><form class="modal-card" @submit.prevent="saveShare"><div class="modal-head"><div><p class="eyebrow">SHARE LINK</p><h2>{{ shareForm.id ? '编辑分享链接' : '添加分享链接' }}</h2></div><button type="button" @click="shareModal = false">×</button></div><label>分享链接<input v-model.trim="shareForm.url" required></label><label>关联 Cookie<select v-model="shareForm.cookie_id" required><option disabled value="">请选择 Cookie</option><option v-for="item in state.cookie_options" :key="item.id" :value="item.id">{{ item.name }} · {{ cookieStatus(item.status) }}</option></select></label><label>提取码<input v-model.trim="shareForm.password" :placeholder="shareForm.id ? '留空表示不修改' : '没有则留空'"></label><label>备注<input v-model.trim="shareForm.note"></label><div class="modal-actions"><button type="button" @click="shareModal = false">取消</button><button class="primary">{{ shareForm.id ? '保存' : '添加并索引' }}</button></div></form></div>
+    <div v-if="cookieModal" class="modal" @click.self="cookieModal = false"><form class="modal-card" @submit.prevent="saveCookie"><div class="modal-head"><div><p class="eyebrow">COOKIE</p><h2>{{ cookieForm.id === null ? '添加 Cookie' : '编辑 Cookie' }}</h2></div><button type="button" @click="cookieModal = false">×</button></div><label>名称<input v-model.trim="cookieForm.name" required placeholder="例如：主账号"></label><label>完整 Cookie<textarea v-model.trim="cookieForm.cookie" rows="8" :required="cookieForm.id === null" :placeholder="cookieForm.id === null ? '必须包含 BDUSS' : '留空表示不更换原 Cookie'"></textarea></label><p class="muted">Cookie 等同登录凭据，保存后页面只显示字段摘要。</p><div class="modal-actions"><button type="button" @click="cookieModal = false">取消</button><button class="primary">保存</button></div></form></div>
     <div v-if="mappingModal" class="modal" @click.self="mappingModal = false"><form class="modal-card large" @submit.prevent="saveMapping"><div class="modal-head"><div><p class="eyebrow">SYNC MAPPING</p><h2>{{ mappingForm.id ? '编辑同步映射' : '新建同步映射' }}</h2></div><button type="button" @click="mappingModal = false">×</button></div><div class="form-grid"><label>分享链接<select v-model="mappingForm.share_link_id" required><option v-for="link in state.links" :key="link.id" :value="link.id">{{ link.title }}</option></select></label><label>远端目录<input v-model.trim="mappingForm.remote_path" placeholder="/资料/报告" required></label><label>目标存储<select v-model="mappingForm.storage_type"><option value="local">本机目录</option><option value="smb_mount">NAS · SMB 挂载</option></select></label><label>目标路径<input v-model.trim="mappingForm.local_path" :placeholder="mappingForm.storage_type === 'smb_mount' ? '\\\\NAS地址\\共享名\\目录' : 'E:\\Sync 或 /data/sync'" required></label><label>同步策略<select v-model="mappingForm.sync_strategy"><option value="copy_new">仅新增/更新（推荐）</option><option value="mirror">镜像</option><option value="ask">询问</option></select></label><label>自动间隔（分钟）<input v-model.number="mappingForm.schedule_interval" type="number" min="1"></label></div><label class="check"><input v-model="mappingForm.auto_sync" type="checkbox">启用自动同步</label><p v-if="probeMessage" class="probe">{{ probeMessage }}</p><div class="modal-actions"><button type="button" @click="probeStorage()">检测连接</button><button type="button" @click="mappingModal = false">取消</button><button class="primary">保存</button></div></form></div>
     <div v-if="syncedFiles.open" class="modal" @click.self="syncedFiles.open = false">
       <section class="modal-card file-modal">

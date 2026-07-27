@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from .models import FileEntry, ShareLink, SyncMapping, User
+from .models import CookieRecord, FileEntry, ShareLink, SyncMapping, User
 
 # 建表 SQL：表结构稳定，使用 IF NOT EXISTS 保证幂等。
 _SCHEMA = """
@@ -30,6 +30,18 @@ CREATE TABLE IF NOT EXISTS user_page_permissions (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS baidu_cookies (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                  TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    masked_value          TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL DEFAULT 'unknown'
+                          CHECK (status IN ('unknown', 'valid', 'invalid')),
+    created_at            REAL NOT NULL,
+    updated_at            REAL NOT NULL,
+    last_validated_at     REAL NOT NULL DEFAULT 0,
+    last_validation_error TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS share_links (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     url           TEXT    NOT NULL,
@@ -41,7 +53,9 @@ CREATE TABLE IF NOT EXISTS share_links (
     status        TEXT    NOT NULL DEFAULT 'active',
     created_at    REAL    NOT NULL,
     last_checked  REAL    NOT NULL,
-    note          TEXT    NOT NULL DEFAULT ''
+    note          TEXT    NOT NULL DEFAULT '',
+    cookie_id     INTEGER,
+    FOREIGN KEY (cookie_id) REFERENCES baidu_cookies(id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS file_entries (
@@ -147,6 +161,19 @@ class Database:
                 "ALTER TABLE sync_mappings ADD COLUMN "
                 "storage_type TEXT NOT NULL DEFAULT 'local'"
             )
+        share_columns = {
+            row["name"] for row in self.conn.execute(
+                "PRAGMA table_info(share_links)"
+            ).fetchall()
+        }
+        if "cookie_id" not in share_columns:
+            self.conn.execute(
+                "ALTER TABLE share_links ADD COLUMN cookie_id INTEGER"
+            )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_share_links_cookie_id "
+            "ON share_links(cookie_id)"
+        )
         self.conn.commit()
 
     def close(self) -> None:
@@ -231,6 +258,95 @@ class Database:
         self.close()
 
     # ------------------------------------------------------------------ #
+    # Cookie metadata CRUD
+    # ------------------------------------------------------------------ #
+    def add_cookie(self, name: str, masked_value: str) -> int:
+        now = __import__("time").time()
+        cur = self.conn.execute(
+            "INSERT INTO baidu_cookies "
+            "(name, masked_value, status, created_at, updated_at) "
+            "VALUES (?, ?, 'unknown', ?, ?)",
+            (name.strip(), masked_value, now, now),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def get_cookie(self, cookie_id: int) -> CookieRecord | None:
+        row = self.conn.execute(
+            "SELECT * FROM baidu_cookies WHERE id = ?", (cookie_id,)
+        ).fetchone()
+        return self._row_to_cookie(row) if row else None
+
+    def get_cookie_by_name(self, name: str) -> CookieRecord | None:
+        row = self.conn.execute(
+            "SELECT * FROM baidu_cookies WHERE name = ? COLLATE NOCASE",
+            (name.strip(),),
+        ).fetchone()
+        return self._row_to_cookie(row) if row else None
+
+    def list_cookies(self) -> list[CookieRecord]:
+        rows = self.conn.execute(
+            "SELECT * FROM baidu_cookies ORDER BY created_at, id"
+        ).fetchall()
+        return [self._row_to_cookie(row) for row in rows]
+
+    def update_cookie(
+        self, cookie_id: int, name: str, masked_value: str | None = None,
+    ) -> None:
+        now = __import__("time").time()
+        if masked_value is None:
+            self.conn.execute(
+                "UPDATE baidu_cookies SET name = ?, updated_at = ? WHERE id = ?",
+                (name.strip(), now, cookie_id),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE baidu_cookies SET name = ?, masked_value = ?, "
+                "status = 'unknown', updated_at = ?, last_validated_at = 0, "
+                "last_validation_error = '' WHERE id = ?",
+                (name.strip(), masked_value, now, cookie_id),
+            )
+        self.conn.commit()
+
+    def update_cookie_status(
+        self, cookie_id: int, status: str | None, error: str = "",
+    ) -> None:
+        now = __import__("time").time()
+        if status is None:
+            self.conn.execute(
+                "UPDATE baidu_cookies SET last_validated_at = ?, "
+                "last_validation_error = ? WHERE id = ?",
+                (now, error, cookie_id),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE baidu_cookies SET status = ?, last_validated_at = ?, "
+                "last_validation_error = ? WHERE id = ?",
+                (status, now, error, cookie_id),
+            )
+        self.conn.commit()
+
+    def cookie_reference_count(self, cookie_id: int) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS count FROM share_links WHERE cookie_id = ?",
+            (cookie_id,),
+        ).fetchone()
+        return int(row["count"])
+
+    def delete_cookie(self, cookie_id: int) -> None:
+        if self.cookie_reference_count(cookie_id):
+            raise ValueError("Cookie 正被分享链接使用，请先重新关联")
+        self.conn.execute("DELETE FROM baidu_cookies WHERE id = ?", (cookie_id,))
+        self.conn.commit()
+
+    def associate_unassigned_links(self, cookie_id: int) -> None:
+        self.conn.execute(
+            "UPDATE share_links SET cookie_id = ? WHERE cookie_id IS NULL",
+            (cookie_id,),
+        )
+        self.conn.commit()
+
+    # ------------------------------------------------------------------ #
     # ShareLink CRUD
     # ------------------------------------------------------------------ #
     def add_share_link(self, link: ShareLink) -> int:
@@ -239,12 +355,12 @@ class Database:
             """
             INSERT INTO share_links
                 (url, surl, password, title, share_id, share_uk,
-                 status, created_at, last_checked, note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 status, created_at, last_checked, note, cookie_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (link.url, link.surl, link.password, link.title, link.share_id,
              link.share_uk, link.status, link.created_at, link.last_checked,
-             link.note),
+             link.note, link.cookie_id),
         )
         self.conn.commit()
         return int(cur.lastrowid)
@@ -273,12 +389,12 @@ class Database:
             UPDATE share_links SET
                 url = ?, surl = ?, password = ?, title = ?, share_id = ?,
                 share_uk = ?, status = ?, created_at = ?, last_checked = ?,
-                note = ?
+                note = ?, cookie_id = ?
             WHERE id = ?
             """,
             (link.url, link.surl, link.password, link.title, link.share_id,
              link.share_uk, link.status, link.created_at, link.last_checked,
-             link.note, link.id),
+             link.note, link.cookie_id, link.id),
         )
         self.conn.commit()
 
@@ -534,6 +650,16 @@ class Database:
         )
 
     @staticmethod
+    def _row_to_cookie(row: sqlite3.Row) -> CookieRecord:
+        return CookieRecord(
+            id=row["id"], name=row["name"], masked_value=row["masked_value"],
+            status=row["status"], created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            last_validated_at=row["last_validated_at"],
+            last_validation_error=row["last_validation_error"],
+        )
+
+    @staticmethod
     def _row_to_share_link(row: sqlite3.Row) -> ShareLink:
         return ShareLink(
             id=row["id"],
@@ -547,6 +673,7 @@ class Database:
             created_at=row["created_at"],
             last_checked=row["last_checked"],
             note=row["note"],
+            cookie_id=row["cookie_id"],
         )
 
     @staticmethod
