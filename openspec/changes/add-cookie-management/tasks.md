@@ -43,4 +43,4 @@
 - [x] 6.2 Update the requirements specification and design document with the new data model, APIs, permissions, security, migration, and Beijing-time behavior.
 - [x] 6.3 Update Jenkins pipeline checks as needed for migrations, tests, frontend build, and preservation of the entire `data` directory.
 - [x] 6.4 Validate the OpenSpec change, review the final diff for secret leakage, and confirm all acceptance scenarios are covered.
-- [ ] 6.5 After implementation is committed and pushed, manually trigger the Jenkins build and provide the deployed service entry for user acceptance.
+- [x] 6.5 After implementation is committed and pushed, manually trigger the Jenkins build and provide the deployed service entry for user acceptance.
