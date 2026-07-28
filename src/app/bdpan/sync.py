@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -170,9 +171,9 @@ class SyncManager:
                 self._download_entry(local_file, entry)
                 result.files_added.append(rel)
             else:
-                # 已存在，以文件大小判断是否需要重新下载。
-                current_size = self._io_path(local_file).stat().st_size
-                if entry.size > 0 and current_size != entry.size:
+                # 已存在时优先用上次同步的远端版本元数据判断；没有元数据的
+                # 旧文件退回到大小判断，避免误覆盖用户原有文件。
+                if self._needs_update(local_file, entry):
                     if strat == SyncStrategy.ASK and confirm_callback:
                         if not confirm_callback(f"更新文件: {rel}", [rel]):
                             result.files_skipped.append(rel)
@@ -259,8 +260,7 @@ class SyncManager:
             if rel not in local_existing:
                 add.append(rel)
             else:
-                current_size = self._io_path(local_root / rel).stat().st_size
-                if entry.size > 0 and current_size != entry.size:
+                if self._needs_update(local_root / rel, entry):
                     update.append(rel)
 
         if SyncStrategy(mapping.sync_strategy or SyncStrategy.COPY_NEW) == SyncStrategy.MIRROR:
@@ -337,6 +337,59 @@ class SyncManager:
         return io_path.stat().st_size == 0 and io_meta.is_file()
 
     @staticmethod
+    def _remote_fingerprint(entry: FileEntry) -> dict[str, object]:
+        """用于判断本地文件是否对应同一个远端版本。"""
+        return {
+            "fs_id": entry.fs_id,
+            "size": entry.size,
+            "md5": entry.md5 or "",
+            "modified_time": entry.modified_time,
+        }
+
+    @classmethod
+    def _read_file_metadata(cls, path: Path) -> dict[str, object] | None:
+        meta = cls._io_path(path.with_name(path.name + ".bdpan"))
+        if not meta.is_file():
+            return None
+        try:
+            data = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        remote = data.get("remote")
+        return remote if isinstance(remote, dict) else None
+
+    @classmethod
+    def _write_file_metadata(cls, path: Path, entry: FileEntry) -> None:
+        meta = cls._io_path(path.with_name(path.name + ".bdpan"))
+        payload = {
+            "version": 1,
+            "synced_at": time.time(),
+            "remote": cls._remote_fingerprint(entry),
+        }
+        meta.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def _needs_update(cls, local_file: Path, entry: FileEntry) -> bool:
+        current_size = cls._io_path(local_file).stat().st_size
+        if entry.size > 0 and current_size != entry.size:
+            return True
+
+        metadata = cls._read_file_metadata(local_file)
+        if metadata is None:
+            return False
+
+        remote = cls._remote_fingerprint(entry)
+        for key in ("fs_id", "md5", "modified_time", "size"):
+            if remote.get(key) and metadata.get(key) != remote.get(key):
+                return True
+        return False
+
+    @staticmethod
     def _io_path(path: Path) -> Path:
         """返回支持 Windows 超过 260 字符路径的文件系统路径。"""
         if os.name != "nt":
@@ -382,6 +435,7 @@ class SyncManager:
                     f"下载大小不一致: 期望 {entry.size} 字节，实际 {written} 字节"
                 )
             os.replace(io_temp, io_file)
+            self._write_file_metadata(local_file, entry)
         except Exception:
             if io_temp.exists():
                 io_temp.unlink()
@@ -389,13 +443,13 @@ class SyncManager:
 
     @classmethod
     def _cleanup_legacy_metadata(cls, local_root: Path) -> None:
-        """删除旧版本生成的 .bdpan 旁车、临时文件和元数据目录。"""
+        """删除旧版本生成的临时文件和元数据目录。"""
         io_root = cls._io_path(local_root)
         if not io_root.exists():
             return
         for dirpath, dirnames, filenames in os.walk(io_root, topdown=False):
             for filename in filenames:
-                if filename.endswith(".bdpan") or filename.endswith(".bdpan.part"):
+                if filename.endswith(".bdpan.part"):
                     (Path(dirpath) / filename).unlink(missing_ok=True)
             for dirname in dirnames:
                 if dirname == cls.META_DIR:

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -15,6 +16,12 @@ class SyncPreviewSafetyTests(unittest.TestCase):
         return FileEntry(
             None, 1, 1, "report.pdf", "/7大投行/高盛/report.pdf",
             False, 10, "md5", 0, None,
+        )
+
+    def _entry_with_version(self, modified_time: int, md5: str = "md5") -> FileEntry:
+        return FileEntry(
+            None, 1, 1, "report.pdf", "/7大投行/高盛/report.pdf",
+            False, 10, md5, modified_time, None,
         )
 
     def test_copy_new_preview_never_reports_local_deletions(self) -> None:
@@ -76,8 +83,65 @@ class SyncPreviewSafetyTests(unittest.TestCase):
             )
 
             self.assertEqual(pdf.read_bytes(), b"real-data!")
-            self.assertFalse(sidecar.exists())
+            self.assertEqual(json.loads(sidecar.read_text())["remote"]["fs_id"], 1)
             self.assertEqual(result.files_updated, ["report.pdf"])
+
+    def test_sync_updates_same_size_file_when_remote_version_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp, "report.pdf")
+            pdf.write_bytes(b"old-data!!")
+            sidecar = Path(tmp, "report.pdf.bdpan")
+            sidecar.write_text(json.dumps({
+                "version": 1,
+                "remote": {
+                    "fs_id": 1,
+                    "size": 10,
+                    "md5": "old-md5",
+                    "modified_time": 100,
+                },
+            }))
+
+            def downloader(_fs_id: int, destination: str) -> int:
+                with open(destination, "wb") as output:
+                    output.write(b"new-data!!")
+                return 10
+
+            db = Mock()
+            manager = SyncManager(db, downloader)
+            result = manager.sync_mapping(
+                self._mapping(tmp, "copy_new"),
+                [self._entry_with_version(200, "new-md5")],
+            )
+
+            self.assertEqual(pdf.read_bytes(), b"new-data!!")
+            self.assertEqual(result.files_updated, ["report.pdf"])
+            meta = json.loads(sidecar.read_text())
+            self.assertEqual(meta["remote"]["modified_time"], 200)
+            self.assertEqual(meta["remote"]["md5"], "new-md5")
+
+    def test_sync_skips_same_remote_version_after_metadata_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp, "report.pdf")
+            pdf.write_bytes(b"real-data!")
+            Path(tmp, "report.pdf.bdpan").write_text(json.dumps({
+                "version": 1,
+                "remote": {
+                    "fs_id": 1,
+                    "size": 10,
+                    "md5": "md5",
+                    "modified_time": 200,
+                },
+            }))
+
+            downloader = Mock()
+            manager = SyncManager(Mock(), downloader)
+            result = manager.sync_mapping(
+                self._mapping(tmp, "copy_new"),
+                [self._entry_with_version(200)],
+            )
+
+            downloader.assert_not_called()
+            self.assertEqual(result.files_updated, [])
 
 
 class WindowsLongPathTests(unittest.TestCase):
