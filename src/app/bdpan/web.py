@@ -109,7 +109,10 @@ def create_app(
             log_file=root / "logs" / "app.log",
             log_retention_days=cfg.log_retention_days,
             task_workers=cfg.task_workers,
-            scheduler_poll_seconds=cfg.scheduler_poll_seconds, raw=cfg.raw,
+            scheduler_poll_seconds=cfg.scheduler_poll_seconds,
+            sync_history_retention_days=cfg.sync_history_retention_days,
+            sync_history_max_runs_per_mapping=cfg.sync_history_max_runs_per_mapping,
+            raw=cfg.raw,
         )
     _prepare_database(cfg, allow_legacy_migration=not testing_override)
     _ensure_password_file(cfg.password_file)
@@ -162,6 +165,8 @@ def create_app(
             str(cfg.database_path), cookie_for_link, persist_client_cookie,
             max_workers=cfg.task_workers,
             scheduler_poll_seconds=cfg.scheduler_poll_seconds,
+            history_retention_days=cfg.sync_history_retention_days,
+            history_max_runs_per_mapping=cfg.sync_history_max_runs_per_mapping,
         )
         yield
         app.state.tasks.close()

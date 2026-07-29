@@ -9,5 +9,7 @@
   "log_file": "logs/app.log",
   "log_retention_days": 30,
   "task_workers": 2,
-  "scheduler_poll_seconds": 15
+  "scheduler_poll_seconds": 15,
+  "sync_history_retention_days": 90,
+  "sync_history_max_runs_per_mapping": 200
 }

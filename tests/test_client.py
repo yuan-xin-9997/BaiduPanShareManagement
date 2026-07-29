@@ -86,6 +86,15 @@ class VerifyPasswordTests(unittest.TestCase):
 
         self.assertEqual(client._post.call_args.kwargs["params"]["bdstoken"], "")
 
+    def test_errno_minus_65_explains_security_or_rate_limit(self) -> None:
+        client = self._client()
+        client._post = Mock(return_value={"errno": -65})
+
+        with self.assertRaisesRegex(
+            BaiduPanError, r"安全验证.*频率限制"
+        ):
+            client.verify_password("1example", "6666")
+
 
 class SharePageParsingTests(unittest.TestCase):
     def test_parses_current_yun_data_format(self) -> None:

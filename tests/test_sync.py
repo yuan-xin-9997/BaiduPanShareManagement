@@ -83,7 +83,9 @@ class SyncPreviewSafetyTests(unittest.TestCase):
             )
 
             self.assertEqual(pdf.read_bytes(), b"real-data!")
-            self.assertEqual(json.loads(sidecar.read_text())["remote"]["fs_id"], 1)
+            self.assertFalse(sidecar.exists())
+            metadata = manager._metadata_path(pdf)
+            self.assertEqual(json.loads(metadata.read_text())["remote"]["fs_id"], 1)
             self.assertEqual(result.files_updated, ["report.pdf"])
 
     def test_sync_updates_same_size_file_when_remote_version_changes(self) -> None:
@@ -115,7 +117,8 @@ class SyncPreviewSafetyTests(unittest.TestCase):
 
             self.assertEqual(pdf.read_bytes(), b"new-data!!")
             self.assertEqual(result.files_updated, ["report.pdf"])
-            meta = json.loads(sidecar.read_text())
+            self.assertFalse(sidecar.exists())
+            meta = json.loads(manager._metadata_path(pdf).read_text())
             self.assertEqual(meta["remote"]["modified_time"], 200)
             self.assertEqual(meta["remote"]["md5"], "new-md5")
 
@@ -142,6 +145,51 @@ class SyncPreviewSafetyTests(unittest.TestCase):
 
             downloader.assert_not_called()
             self.assertEqual(result.files_updated, [])
+
+    def test_hashed_metadata_supports_max_length_utf8_names(self) -> None:
+        names = [
+            "a" * 250 + ".pdf",
+            "中" * 83 + ".pdf",
+            "mixed-" + "a" * 110 + "中" * 44 + ".pdf",
+        ]
+        for index, name in enumerate(names, start=1):
+            with self.subTest(name=name[:20]), tempfile.TemporaryDirectory() as tmp:
+                local_file = Path(tmp, name)
+                entry = FileEntry(
+                    None, 1, index, name, "/资料/" + name,
+                    False, 10, f"md5-{index}", 100 + index, None,
+                )
+
+                def downloader(_fs_id: int, destination: str) -> int:
+                    Path(destination).write_bytes(b"real-data!")
+                    return 10
+
+                manager = SyncManager(Mock(), downloader)
+                manager._download_entry(local_file, entry)
+
+                metadata = manager._metadata_path(local_file)
+                self.assertTrue(local_file.is_file())
+                self.assertTrue(metadata.is_file())
+                self.assertLessEqual(len(metadata.name.encode("utf-8")), 255)
+                self.assertEqual(
+                    manager._read_file_metadata(local_file)["fs_id"], index
+                )
+
+    def test_reads_legacy_sidecar_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            local_file = Path(tmp, "legacy.pdf")
+            local_file.write_bytes(b"real-data!")
+            local_file.with_name("legacy.pdf.bdpan").write_text(json.dumps({
+                "version": 1,
+                "remote": {
+                    "fs_id": 7, "size": 10, "md5": "legacy", "modified_time": 8,
+                },
+            }))
+
+            metadata = SyncManager._read_file_metadata(local_file)
+
+            self.assertEqual(metadata["fs_id"], 7)
+            self.assertFalse(SyncManager._metadata_path(local_file).exists())
 
 
 class WindowsLongPathTests(unittest.TestCase):

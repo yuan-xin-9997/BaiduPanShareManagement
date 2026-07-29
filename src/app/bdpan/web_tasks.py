@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from typing import Callable
 
-from .client import BaiduPanClient
+from .client import BaiduPanClient, BaiduPanError
 from .cookies import redact_sensitive
 from .database import Database
 from .models import ShareLink
@@ -36,16 +36,26 @@ class TaskState:
 class TaskManager:
     """进程内任务队列；每个任务使用独立数据库连接。"""
 
+    STANDARD_BACKOFF_SECONDS = 5 * 60
+    STANDARD_BACKOFF_MAX_SECONDS = 6 * 60 * 60
+    RISK_BACKOFF_SECONDS = 6 * 60 * 60
+    RISK_BACKOFF_MAX_SECONDS = 24 * 60 * 60
+
     def __init__(
         self, db_path: str, cookie_getter: Callable[[ShareLink], str],
         cookie_updater: Callable[[ShareLink, str], None] | None = None,
         max_workers: int = 2, scheduler_poll_seconds: int = 15,
+        history_retention_days: int = 90,
+        history_max_runs_per_mapping: int = 200,
+        scheduler_enabled: bool = True,
     ) -> None:
         self.db_path = db_path
         self.cookie_getter = cookie_getter
         self.cookie_updater = cookie_updater
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="bdpan")
         self.scheduler_poll_seconds = scheduler_poll_seconds
+        self.history_retention_days = history_retention_days
+        self.history_max_runs_per_mapping = history_max_runs_per_mapping
         self.tasks: dict[str, TaskState] = {}
         self._lock = threading.Lock()
         self._running_mappings: set[int] = set()
@@ -53,7 +63,8 @@ class TaskManager:
         self._scheduler = threading.Thread(
             target=self._scheduler_loop, name="bdpan-scheduler", daemon=True
         )
-        self._scheduler.start()
+        if scheduler_enabled:
+            self._scheduler.start()
 
     def close(self) -> None:
         self._stop.set()
@@ -99,11 +110,13 @@ class TaskManager:
 
         def sync(progress: Callable[[str], None]) -> str:
             run_id: int | None = None
+            mapping = None
             db = Database(self.db_path)
             try:
                 mapping = db.get_sync_mapping(mapping_id)
                 if not mapping:
                     raise ValueError("同步映射不存在")
+                db.mark_sync_attempt(mapping_id, time.time())
                 link = db.get_share_link(mapping.share_link_id)
                 if not link:
                     raise ValueError("关联的分享链接不存在")
@@ -147,8 +160,23 @@ class TaskManager:
             except Exception as exc:
                 if run_id is not None:
                     db.update_sync_run(run_id, "failed", redact_sensitive(exc))
+                if mapping is not None:
+                    failed_at = time.time()
+                    delay = self._failure_backoff_seconds(
+                        mapping.consecutive_failures + 1, exc
+                    )
+                    db.mark_sync_failure(
+                        mapping_id, failed_at, failed_at + delay
+                    )
                 raise
             finally:
+                try:
+                    db.prune_sync_runs(
+                        self.history_retention_days,
+                        self.history_max_runs_per_mapping,
+                    )
+                except Exception:
+                    logger.exception("同步历史清理失败")
                 db.close()
                 with self._lock:
                     self._running_mappings.discard(mapping_id)
@@ -175,23 +203,63 @@ class TaskManager:
             if task:
                 for key, value in values.items():
                     setattr(task, key, value)
+            completed = sorted(
+                (
+                    item for item in self.tasks.values()
+                    if item.status in {"success", "failed"}
+                ),
+                key=lambda item: item.finished_at, reverse=True,
+            )
+            for stale in completed[200:]:
+                self.tasks.pop(stale.id, None)
+
+    @classmethod
+    def _failure_backoff_seconds(cls, failure_count: int, exc: Exception) -> int:
+        error: BaseException | None = exc
+        risk_controlled = False
+        visited: set[int] = set()
+        while error is not None and id(error) not in visited:
+            visited.add(id(error))
+            if isinstance(error, BaiduPanError) and error.code == -65:
+                risk_controlled = True
+                break
+            error = error.__cause__ or error.__context__
+        exponent = min(16, max(0, failure_count - 1))
+        if risk_controlled:
+            return min(
+                cls.RISK_BACKOFF_SECONDS * (2 ** exponent),
+                cls.RISK_BACKOFF_MAX_SECONDS,
+            )
+        return min(
+            cls.STANDARD_BACKOFF_SECONDS * (2 ** exponent),
+            cls.STANDARD_BACKOFF_MAX_SECONDS,
+        )
+
+    def _scheduler_tick(self, now: float | None = None) -> list[int]:
+        """执行一次调度检查，返回本轮提交的映射 ID。"""
+        current = time.time() if now is None else now
+        db = Database(self.db_path)
+        try:
+            due = [
+                mapping for mapping in db.get_all_sync_mappings()
+                if mapping.auto_sync
+                and current - mapping.last_synced
+                >= max(1, mapping.schedule_interval) * 60
+                and current >= mapping.retry_after
+            ]
+        finally:
+            db.close()
+        submitted: list[int] = []
+        for mapping in due:
+            if mapping.id is not None and self.submit_sync(
+                mapping.id, "scheduled"
+            ) is not None:
+                submitted.append(mapping.id)
+        return submitted
 
     def _scheduler_loop(self) -> None:
         while not self._stop.wait(self.scheduler_poll_seconds):
             try:
-                db = Database(self.db_path)
-                try:
-                    now = time.time()
-                    due = [
-                        mapping for mapping in db.get_all_sync_mappings()
-                        if mapping.auto_sync
-                        and now - mapping.last_synced
-                        >= max(1, mapping.schedule_interval) * 60
-                    ]
-                finally:
-                    db.close()
-                for mapping in due:
-                    if mapping.id is not None:
-                        self.submit_sync(mapping.id, "scheduled")
+                self._scheduler_tick()
             except Exception:
                 logger.exception("自动同步调度检查失败")

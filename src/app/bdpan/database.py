@@ -82,6 +82,9 @@ CREATE TABLE IF NOT EXISTS sync_mappings (
     sync_strategy  TEXT    NOT NULL DEFAULT 'ask',
     schedule_interval INTEGER NOT NULL DEFAULT 60,
     storage_type   TEXT    NOT NULL DEFAULT 'local',
+    last_attempted REAL    NOT NULL DEFAULT 0,
+    retry_after    REAL    NOT NULL DEFAULT 0,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (share_link_id) REFERENCES share_links(id) ON DELETE CASCADE
 );
 
@@ -160,6 +163,21 @@ class Database:
             self.conn.execute(
                 "ALTER TABLE sync_mappings ADD COLUMN "
                 "storage_type TEXT NOT NULL DEFAULT 'local'"
+            )
+        if "last_attempted" not in columns:
+            self.conn.execute(
+                "ALTER TABLE sync_mappings ADD COLUMN "
+                "last_attempted REAL NOT NULL DEFAULT 0"
+            )
+        if "retry_after" not in columns:
+            self.conn.execute(
+                "ALTER TABLE sync_mappings ADD COLUMN "
+                "retry_after REAL NOT NULL DEFAULT 0"
+            )
+        if "consecutive_failures" not in columns:
+            self.conn.execute(
+                "ALTER TABLE sync_mappings ADD COLUMN "
+                "consecutive_failures INTEGER NOT NULL DEFAULT 0"
             )
         share_columns = {
             row["name"] for row in self.conn.execute(
@@ -517,6 +535,34 @@ class Database:
         )
         self.conn.commit()
 
+    def mark_sync_attempt(self, mapping_id: int, attempted_at: float) -> None:
+        """记录一次同步尝试，不改变正常同步周期或当前退避。"""
+        self.conn.execute(
+            "UPDATE sync_mappings SET last_attempted = ? WHERE id = ?",
+            (attempted_at, mapping_id),
+        )
+        self.conn.commit()
+
+    def mark_sync_success(self, mapping_id: int, synced_at: float) -> None:
+        """记录成功并清除连续失败退避状态。"""
+        self.conn.execute(
+            "UPDATE sync_mappings SET last_synced = ?, last_attempted = ?, "
+            "retry_after = 0, consecutive_failures = 0 WHERE id = ?",
+            (synced_at, synced_at, mapping_id),
+        )
+        self.conn.commit()
+
+    def mark_sync_failure(
+        self, mapping_id: int, attempted_at: float, retry_after: float,
+    ) -> None:
+        """记录失败，并持久化下次允许自动尝试的时间。"""
+        self.conn.execute(
+            "UPDATE sync_mappings SET last_attempted = ?, retry_after = ?, "
+            "consecutive_failures = consecutive_failures + 1 WHERE id = ?",
+            (attempted_at, retry_after, mapping_id),
+        )
+        self.conn.commit()
+
     def delete_sync_mapping(self, mapping_id: int) -> None:
         """按 ID 删除单个同步映射。"""
         self.conn.execute(
@@ -562,6 +608,40 @@ class Database:
             {**dict(row), "has_files": bool(row["has_files"])}
             for row in cur.fetchall()
         ]
+
+    def prune_sync_runs(
+        self, retention_days: int = 90, max_per_mapping: int = 200,
+        now: float | None = None,
+    ) -> int:
+        """清理已完成的旧历史；逐文件记录由外键级联删除。"""
+        current = __import__("time").time() if now is None else now
+        deleted = 0
+        if retention_days > 0:
+            cursor = self.conn.execute(
+                "DELETE FROM sync_runs WHERE finished_at > 0 AND finished_at < ?",
+                (current - retention_days * 86400,),
+            )
+            deleted += max(0, cursor.rowcount)
+        if max_per_mapping > 0:
+            mapping_ids = self.conn.execute(
+                "SELECT DISTINCT mapping_id FROM sync_runs "
+                "WHERE mapping_id IS NOT NULL"
+            ).fetchall()
+            for row in mapping_ids:
+                stale = self.conn.execute(
+                    "SELECT id FROM sync_runs WHERE mapping_id = ? "
+                    "ORDER BY started_at DESC, id DESC LIMIT -1 OFFSET ?",
+                    (row["mapping_id"], max_per_mapping),
+                ).fetchall()
+                if stale:
+                    placeholders = ",".join("?" for _ in stale)
+                    cursor = self.conn.execute(
+                        f"DELETE FROM sync_runs WHERE id IN ({placeholders})",
+                        tuple(item["id"] for item in stale),
+                    )
+                    deleted += max(0, cursor.rowcount)
+        self.conn.commit()
+        return deleted
 
     def get_sync_run(self, run_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
@@ -703,4 +783,7 @@ class Database:
             sync_strategy=row["sync_strategy"],
             schedule_interval=row["schedule_interval"],
             storage_type=row["storage_type"],
+            last_attempted=row["last_attempted"],
+            retry_after=row["retry_after"],
+            consecutive_failures=row["consecutive_failures"],
         )

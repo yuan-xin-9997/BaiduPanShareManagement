@@ -84,3 +84,6 @@ class SyncMapping:
     sync_strategy: str      # 同步策略: mirror/copy_new/ask
     schedule_interval: int = 60  # 自动同步间隔（分钟）
     storage_type: str = "local"  # local / smb_mount
+    last_attempted: float = 0
+    retry_after: float = 0
+    consecutive_failures: int = 0

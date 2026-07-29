@@ -84,7 +84,10 @@ def test_database_migrates_existing_mapping_table(tmp_path: Path) -> None:
         ).fetchall()
     }
     store.close()
-    assert {"schedule_interval", "storage_type"}.issubset(columns)
+    assert {
+        "schedule_interval", "storage_type", "last_attempted",
+        "retry_after", "consecutive_failures",
+    }.issubset(columns)
 
 
 def test_local_storage_probe_accepts_existing_writable_directory(tmp_path: Path) -> None:

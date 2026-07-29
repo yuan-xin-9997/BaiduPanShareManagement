@@ -26,6 +26,8 @@ class AppConfig:
     log_retention_days: int
     task_workers: int
     scheduler_poll_seconds: int
+    sync_history_retention_days: int
+    sync_history_max_runs_per_mapping: int
     raw: dict[str, Any]
 
     def public_dict(self) -> dict[str, Any]:
@@ -40,6 +42,8 @@ class AppConfig:
             "log_retention_days": self.log_retention_days,
             "task_workers": self.task_workers,
             "scheduler_poll_seconds": self.scheduler_poll_seconds,
+            "sync_history_retention_days": self.sync_history_retention_days,
+            "sync_history_max_runs_per_mapping": self.sync_history_max_runs_per_mapping,
         }
 
 
@@ -66,5 +70,11 @@ def load_app_config(path: str | Path | None = None) -> AppConfig:
         log_retention_days=int(raw.get("log_retention_days", 30)),
         task_workers=max(1, int(raw.get("task_workers", 2))),
         scheduler_poll_seconds=max(5, int(raw.get("scheduler_poll_seconds", 15))),
+        sync_history_retention_days=max(
+            1, int(raw.get("sync_history_retention_days", 90))
+        ),
+        sync_history_max_runs_per_mapping=max(
+            10, int(raw.get("sync_history_max_runs_per_mapping", 200))
+        ),
         raw=raw,
     )

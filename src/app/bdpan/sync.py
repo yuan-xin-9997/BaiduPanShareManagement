@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import json
-import shutil
+import hashlib
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -66,7 +66,6 @@ class SyncManager:
     """
 
     META_DIR = ".bdpan_meta"
-    META_FILE = "link_info.json"
 
     def __init__(
         self,
@@ -139,7 +138,7 @@ class SyncManager:
             rel for rel, path in local_existing.items()
             if self._is_managed_placeholder(path)
         }
-        # 先清理旧版本旁车；即使后续某个下载失败，也不会继续残留。
+        # 先清理上次异常退出留下的临时文件。
         self._cleanup_legacy_metadata(local_root)
 
         # 构建期望的文件列表（相对于 remote_root 的路径）
@@ -190,17 +189,17 @@ class SyncManager:
                             if not confirm_callback(f"删除文件: {rel}", [rel]):
                                 continue
                         self._io_path(path).unlink()
-                        meta = path.with_name(path.name + ".bdpan")
-                        io_meta = self._io_path(meta)
-                        if io_meta.exists():
-                            io_meta.unlink()
+                        self._delete_file_metadata(path)
                         result.files_deleted.append(rel)
                     except Exception as e:
                         result.errors.append(f"删除 {rel} 失败: {e}")
 
-        # 更新最后同步时间
-        mapping.last_synced = time.time()
-        self.db.update_sync_mapping(mapping)
+        if not result.errors:
+            mapping.last_synced = time.time()
+            mapping.last_attempted = mapping.last_synced
+            mapping.retry_after = 0
+            mapping.consecutive_failures = 0
+            self.db.mark_sync_success(mapping.id or 0, mapping.last_synced)
 
         logger.info(
             "同步完成 %s -> %s: %s",
@@ -329,12 +328,9 @@ class SyncManager:
             or path.name.endswith(".bdpan.part")
         )
 
-    @staticmethod
-    def _is_managed_placeholder(path: Path) -> bool:
-        meta = path.with_name(path.name + ".bdpan")
-        io_path = SyncManager._io_path(path)
-        io_meta = SyncManager._io_path(meta)
-        return io_path.stat().st_size == 0 and io_meta.is_file()
+    @classmethod
+    def _is_managed_placeholder(cls, path: Path) -> bool:
+        return cls._io_path(path).stat().st_size == 0 and cls._metadata_exists(path)
 
     @staticmethod
     def _remote_fingerprint(entry: FileEntry) -> dict[str, object]:
@@ -347,31 +343,81 @@ class SyncManager:
         }
 
     @classmethod
+    def _metadata_path(cls, path: Path) -> Path:
+        """返回与原文件名长度无关的稳定元数据路径。"""
+        digest = hashlib.sha256(
+            path.name.encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
+        return path.parent / cls.META_DIR / f"{digest}.json"
+
+    @classmethod
+    def _legacy_metadata_path(cls, path: Path) -> Path:
+        return path.with_name(path.name + ".bdpan")
+
+    @classmethod
+    def _metadata_candidates(cls, path: Path) -> tuple[Path, Path]:
+        return cls._metadata_path(path), cls._legacy_metadata_path(path)
+
+    @classmethod
+    def _metadata_exists(cls, path: Path) -> bool:
+        for candidate in cls._metadata_candidates(path):
+            try:
+                if cls._io_path(candidate).is_file():
+                    return True
+            except OSError:
+                # 旧格式可能仅因追加 .bdpan 后超过 NAME_MAX 而不可访问。
+                continue
+        return False
+
+    @classmethod
     def _read_file_metadata(cls, path: Path) -> dict[str, object] | None:
-        meta = cls._io_path(path.with_name(path.name + ".bdpan"))
-        if not meta.is_file():
-            return None
-        try:
-            data = json.loads(meta.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(data, dict):
-            return None
-        remote = data.get("remote")
-        return remote if isinstance(remote, dict) else None
+        for candidate in cls._metadata_candidates(path):
+            try:
+                meta = cls._io_path(candidate)
+                if not meta.is_file():
+                    continue
+                data = json.loads(meta.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            remote = data.get("remote")
+            if isinstance(remote, dict):
+                return remote
+        return None
 
     @classmethod
     def _write_file_metadata(cls, path: Path, entry: FileEntry) -> None:
-        meta = cls._io_path(path.with_name(path.name + ".bdpan"))
+        meta = cls._io_path(cls._metadata_path(path))
+        meta.parent.mkdir(parents=True, exist_ok=True)
+        temp = meta.with_suffix(".json.part")
         payload = {
-            "version": 1,
+            "version": 2,
+            "file_name": path.name,
             "synced_at": time.time(),
             "remote": cls._remote_fingerprint(entry),
         }
-        meta.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        try:
+            temp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(temp, meta)
+        finally:
+            temp.unlink(missing_ok=True)
+        legacy = cls._legacy_metadata_path(path)
+        try:
+            cls._io_path(legacy).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    @classmethod
+    def _delete_file_metadata(cls, path: Path) -> None:
+        for candidate in cls._metadata_candidates(path):
+            try:
+                cls._io_path(candidate).unlink(missing_ok=True)
+            except OSError:
+                continue
 
     @classmethod
     def _needs_update(cls, local_file: Path, entry: FileEntry) -> bool:
@@ -443,14 +489,11 @@ class SyncManager:
 
     @classmethod
     def _cleanup_legacy_metadata(cls, local_root: Path) -> None:
-        """删除旧版本生成的临时文件和元数据目录。"""
+        """删除异常退出留下的下载和元数据临时文件。"""
         io_root = cls._io_path(local_root)
         if not io_root.exists():
             return
         for dirpath, dirnames, filenames in os.walk(io_root, topdown=False):
             for filename in filenames:
-                if filename.endswith(".bdpan.part"):
+                if filename.endswith(".bdpan.part") or filename.endswith(".json.part"):
                     (Path(dirpath) / filename).unlink(missing_ok=True)
-            for dirname in dirnames:
-                if dirname == cls.META_DIR:
-                    shutil.rmtree(Path(dirpath) / dirname, ignore_errors=True)
