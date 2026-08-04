@@ -36,6 +36,17 @@ class BdstokenTests(unittest.TestCase):
         with self.assertRaisesRegex(BaiduPanError, "没有 bdstoken"):
             client.get_bdstoken()
 
+    def test_rejects_non_object_json_response_with_readable_error(self) -> None:
+        class Response:
+            def json(self):
+                return "waf page"
+
+        client = BaiduPanClient(cookie="BDUSS=test")
+        client.session.get = Mock(return_value=Response())
+
+        with self.assertRaisesRegex(BaiduPanError, "响应格式异常.*str"):
+            client._get("https://pan.baidu.com/api/test")
+
     def test_share_token_falls_back_to_empty_on_login_risk_control(self) -> None:
         client = BaiduPanClient(cookie="BDUSS=test")
         client.get_bdstoken = Mock(side_effect=BaiduPanError(-6, "risk control"))
@@ -170,6 +181,18 @@ class ApiItemParsingTests(unittest.TestCase):
         self.assertEqual(result[0]["fs_id"], 1)
         self.assertEqual(result[-1]["fs_id"], 100)
 
+    def test_rejects_non_list_share_list_payload(self) -> None:
+        client = BaiduPanClient(cookie="test-cookie")
+        client.get_bdstoken = Mock(return_value="test-token")
+        client._get = Mock(return_value={"errno": 0, "list": "not-a-list"})
+
+        with self.assertRaisesRegex(BaiduPanError, "share/list 响应列表格式异常"):
+            client.get_share_file_list(1, 2, root=True)
+
+    def test_rejects_non_object_share_list_item(self) -> None:
+        with self.assertRaisesRegex(BaiduPanError, "分享目录条目响应格式异常"):
+            BaiduPanClient._api_item_to_share_file("bad-item")
+
 
 class ShareDownloadTests(unittest.TestCase):
     def test_get_share_download_url_sends_complete_share_context(self) -> None:
@@ -199,6 +222,21 @@ class ShareDownloadTests(unittest.TestCase):
         self.assertEqual(payload["type"], "dlink")
         self.assertEqual(payload["shareid"], "11564703787")
         self.assertIn("test-sekey", payload["extra"])
+
+    def test_rejects_non_object_download_list_item(self) -> None:
+        client = BaiduPanClient(cookie="test-cookie")
+        client._download_share_id = 11564703787
+        client._download_share_uk = 1732809698
+        client._download_surl = "1example"
+        client.get_bdstoken = Mock(return_value="test-token")
+        client._get = Mock(return_value={
+            "errno": 0,
+            "data": {"sign": "test-sign", "timestamp": 1234567890},
+        })
+        client._post = Mock(return_value={"errno": 0, "list": ["bad-item"]})
+
+        with self.assertRaisesRegex(BaiduPanError, "文件下载地址响应格式异常"):
+            client.get_share_download_url(307288499661)
 
     def test_dlink_request_uses_only_bduss_and_netdisk_user_agent(self) -> None:
         class Response:

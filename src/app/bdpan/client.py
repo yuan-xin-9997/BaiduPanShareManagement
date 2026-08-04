@@ -257,7 +257,7 @@ class BaiduPanClient:
                     url, params=params, headers=headers,
                     timeout=self.timeout, allow_redirects=True, verify=False,
                 )
-                return r.json()
+                return self._json_object(r.json(), "GET", url)
             except requests.exceptions.JSONDecodeError:
                 # 返回的不是 JSON，可能是 HTML 页面
                 raise BaiduPanError(-1, "服务器返回非 JSON 响应，可能需要重新登录")
@@ -276,7 +276,7 @@ class BaiduPanClient:
                     headers=self.session.headers,
                     timeout=self.timeout, allow_redirects=False, verify=False,
                 )
-                return r.json()
+                return self._json_object(r.json(), "POST", url)
             except requests.exceptions.JSONDecodeError:
                 raise BaiduPanError(-1, "服务器返回非 JSON 响应")
             except requests.exceptions.RequestException as e:
@@ -284,6 +284,16 @@ class BaiduPanClient:
                     raise BaiduPanError(-1, f"网络请求失败: {e}")
                 time.sleep(1)
         raise BaiduPanError(-1, "请求重试次数耗尽")
+
+    @staticmethod
+    def _json_object(value: Any, method: str, url: str) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        raise BaiduPanError(
+            -1,
+            f"百度接口响应格式异常：{method} {url} 返回 {type(value).__name__}，"
+            "请稍后重试或刷新 Cookie",
+        )
 
     def _get_html(self, url: str) -> str:
         """GET 请求，返回 HTML 文本。"""
@@ -498,9 +508,11 @@ class BaiduPanClient:
                             f"读取分享目录第 {offset + 1} 个条目失败 "
                             f"(errno={single_errno})",
                         )
-                    items.extend(single_data.get("list", []))
+                    items.extend(
+                        self._json_list(single_data.get("list", []), "share/list")
+                    )
             else:
-                items = data.get("list", [])
+                items = self._json_list(data.get("list", []), "share/list")
             result.extend(items)
             # 降级页可能因跳过 errno 115 条目而不足 100 条，但后面仍有分页。
             if not recovered_page and len(items) < page_size:
@@ -643,6 +655,8 @@ class BaiduPanClient:
                 "获取分享下载签名失败",
             )
         sign_data = config.get("data", {})
+        if not isinstance(sign_data, dict):
+            raise BaiduPanError(-1, "分享下载签名响应格式异常")
         sign = sign_data.get("sign", "")
         timestamp = sign_data.get("timestamp", "")
         if not sign or not timestamp:
@@ -671,8 +685,11 @@ class BaiduPanClient:
         errno = data.get("errno", -1)
         if errno != 0:
             raise BaiduPanError(errno, f"获取文件下载地址失败 (errno={errno})")
-        items = data.get("list", [])
-        dlink = items[0].get("dlink", "") if items else data.get("dlink", "")
+        items = self._json_list(data.get("list", []), "sharedownload")
+        first = items[0] if items else {}
+        if first and not isinstance(first, dict):
+            raise BaiduPanError(-1, "文件下载地址响应格式异常")
+        dlink = first.get("dlink", "") if first else data.get("dlink", "")
         if not dlink:
             raise BaiduPanError(-1, "百度未返回文件下载地址")
         return dlink
@@ -767,6 +784,8 @@ class BaiduPanClient:
         parent_path: str = "",
     ) -> ShareFile:
         """将 share/list API 返回的条目转为 ShareFile。"""
+        if not isinstance(item, dict):
+            raise BaiduPanError(-1, "分享目录条目响应格式异常")
         name = item.get("server_filename", item.get("name", ""))
         # 百度接口可能返回整数 1，也可能返回字符串 "1"。
         is_dir = str(item.get("isdir", 0)) == "1"
@@ -783,6 +802,12 @@ class BaiduPanClient:
             created_time=int(item.get("local_ctime", 0)),
             modified_time=int(item.get("local_mtime", 0)),
         )
+
+    @staticmethod
+    def _json_list(value: Any, context: str) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        raise BaiduPanError(-1, f"{context} 响应列表格式异常")
 
     def close(self) -> None:
         """关闭会话。"""
