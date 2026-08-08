@@ -2,7 +2,7 @@
 
 1. 优先基于 Python 语言开发，后端架构使用 Fastapi、前端架构使用 Vue。
 2. 数据库优先使用轻量数据库 SQLite，如果要开发的系统不适合 SQLite，需要给出理由并经过审批才能更换。
-3. 如果涉及到网页抓取，优先使用集中的网页抓取服务，API Key 是966f9d9f573e6efcb889b5fe9bfe48b6c528e4a08ebddc3ffcbd5c49406a9fa9，服务地址：[http://192.168.0.111:33333/](http://192.168.0.111:33333/health/ready)，健康检查http://192.168.0.111:33333/health/ready，接口文档[WebFetch Service - Swagger UI](http://192.168.0.111:33333/docs)，README[web_fetch/README.md at main · yuan-xin-9997/web_fetch · GitHub](https://github.com/yuan-xin-9997/web_fetch/blob/main/README.md)
+3. 如果涉及到网页抓取，优先使用集中的网页抓取服务，API Key 是966f9d9f573e6efcb889b5fe9bfe48b6c528e4a08ebddc3ffcbd5c49406a9fa9，服务地址：[http://192.168.0.111:33333/](http://192.168.0.111:33333/health/ready)，健康检查http://192.168.0.111:33333/health/ready，接口文档[WebFetch Service - Swagger UI](http://192.168.0.111:33333/docs)，READMEhttps://github.com/yuan-xin-9997/web_fetch/blob/main/README.md
 4. 如果涉及到翻译需求，优先使用我在NAS部署的翻译服务（基于 ollama），API Key 是48689f5f386ea97ea7b6bb32deb6c1f3700d1a709104ecc1b1619406ac3f9c4a，服务地址：[http://192.168.0.100:11880/](http://192.168.0.100:11880/docs)，接口文档：http://192.168.0.100:11880/docs，健康检查：http://192.168.0.100:11880/health。如果 IP 访问失败，尝试将 IP 端口替换为公网域名https://translate.yuan-xin.top/
 5. 如果涉及到 OCR 需求，优先使用我在NAS部署的 OCR 服务（基于 ollama），API Key 是c20d02024ae9402f8963bfad819213f0701d51894806b1cc638b3d7a5434da06，服务地址：http://192.168.0.100:11980/，接口文档：http://192.168.0.100:11980/docs，健康检查：http://192.168.0.100:11980/health。如果 IP 访问失败，尝试将 IP 端口替换为公网域名[https://ocr.yuan-xin.top/](https://translate.yuan-xin.top/)
 
