@@ -261,6 +261,54 @@ class ShareDownloadTests(unittest.TestCase):
             "https://example.test/file",
         )
 
+    @patch("bdpan.client.time.sleep")
+    def test_retries_on_risk_control_string_then_succeeds(self, _sleep) -> None:
+        # 百度风控时 sharedownload 返回 errno=0 但 list 为密文字符串（非 JSON）；
+        # 重试后恢复正常数组，应成功取到 dlink。
+        client = BaiduPanClient(cookie="test-cookie")
+        client._download_share_id = 11564703787
+        client._download_share_uk = 1732808968
+        client._download_surl = "1example"
+        client.get_bdstoken = Mock(return_value="test-token")
+        client._get = Mock(return_value={
+            "errno": 0,
+            "data": {"sign": "test-sign", "timestamp": 1234567890},
+        })
+        client._post = Mock(side_effect=[
+            {"errno": 0, "list": "lcLSYqsqWZI7非JSON密文响应"},
+            {"errno": 0, "list": "lcLSYqsqWZI7非JSON密文响应"},
+            {"errno": 0, "list": [{"dlink": "https://example.test/file"}]},
+        ])
+
+        self.assertEqual(
+            client.get_share_download_url(307288499661),
+            "https://example.test/file",
+        )
+        self.assertEqual(client._post.call_count, 3)
+
+    @patch("bdpan.client.time.sleep")
+    def test_raises_risk_control_after_retries_exhausted(self, _sleep) -> None:
+        # 风控持续未恢复时，重试耗尽后按 -65 限流抛出，触发更长退避。
+        client = BaiduPanClient(cookie="test-cookie")
+        client._download_share_id = 11564703787
+        client._download_share_uk = 1732808968
+        client._download_surl = "1example"
+        client.get_bdstoken = Mock(return_value="test-token")
+        client._get = Mock(return_value={
+            "errno": 0,
+            "data": {"sign": "test-sign", "timestamp": 1234567890},
+        })
+        client._post = Mock(return_value={
+            "errno": 0,
+            "list": "lcLSYqsqWZI7非JSON密文响应",
+        })
+
+        with self.assertRaises(BaiduPanError) as ctx:
+            client.get_share_download_url(307288499661)
+        self.assertEqual(ctx.exception.code, -65)
+        # risk_retries = 4
+        self.assertEqual(client._post.call_count, 4)
+
     def test_json_list_decodes_json_string_and_rejects_garbage(self) -> None:
         self.assertEqual(
             BaiduPanClient._json_list('[{"a": 1}]', "sharedownload"),

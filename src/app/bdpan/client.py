@@ -638,70 +638,95 @@ class BaiduPanClient:
         """为分享文件获取临时下载地址。"""
         if not self._download_share_id or not self._download_share_uk:
             raise BaiduPanError(-1, "尚未准备分享下载会话")
-        config = self._get(
-            f"{BASE_URL}/share/tplconfig",
-            {
-                "surl": self._download_surl,
-                "fields": "sign,timestamp",
+        bdstoken = self._get_share_bdstoken()
+        # 百度在风控/限流时，sharedownload 会返回 errno=0 但 list 为一段密文字符串
+        # （非 JSON 数组）。该响应通常为临时性风控，短时间内可能恢复，故重试若干次；
+        # 仍未恢复则按 -65 限流处理，触发更长退避，避免频繁重试加剧风控。
+        risk_retries = 4
+        for attempt in range(risk_retries):
+            config = self._get(
+                f"{BASE_URL}/share/tplconfig",
+                {
+                    "surl": self._download_surl,
+                    "fields": "sign,timestamp",
+                    "channel": "chunlei",
+                    "web": "1",
+                    "app_id": "250528",
+                    "clienttype": "0",
+                },
+            )
+            if config.get("errno") != 0:
+                raise BaiduPanError(
+                    config.get("errno", -1),
+                    "获取分享下载签名失败",
+                )
+            sign_data = config.get("data", {})
+            if not isinstance(sign_data, dict):
+                raise BaiduPanError(-1, "分享下载签名响应格式异常")
+            sign = sign_data.get("sign", "")
+            timestamp = sign_data.get("timestamp", "")
+            if not sign or not timestamp:
+                raise BaiduPanError(-1, "分享下载签名响应不完整")
+            params = {
+                "sign": sign,
+                "timestamp": str(timestamp),
+                "bdstoken": bdstoken,
                 "channel": "chunlei",
                 "web": "1",
                 "app_id": "250528",
                 "clienttype": "0",
-            },
-        )
-        if config.get("errno") != 0:
-            raise BaiduPanError(
-                config.get("errno", -1),
-                "获取分享下载签名失败",
-            )
-        sign_data = config.get("data", {})
-        if not isinstance(sign_data, dict):
-            raise BaiduPanError(-1, "分享下载签名响应格式异常")
-        sign = sign_data.get("sign", "")
-        timestamp = sign_data.get("timestamp", "")
-        if not sign or not timestamp:
-            raise BaiduPanError(-1, "分享下载签名响应不完整")
-        params = {
-            "sign": sign,
-            "timestamp": str(timestamp),
-            "bdstoken": self._get_share_bdstoken(),
-            "channel": "chunlei",
-            "web": "1",
-            "app_id": "250528",
-            "clienttype": "0",
-        }
-        payload: dict[str, str] = {
-            "encrypt": "0",
-            "product": "share",
-            "uk": str(self._download_share_uk),
-            "primaryid": str(self._download_share_id),
-            "shareid": str(self._download_share_id),
-            "fid_list": json.dumps([fs_id]),
-            "type": "dlink",
-        }
-        if self._download_sekey:
-            payload["extra"] = json.dumps({"sekey": self._download_sekey})
-        data = self._post(f"{BASE_URL}/api/sharedownload", params, payload)
-        errno = data.get("errno", -1)
-        if errno != 0:
-            raise BaiduPanError(errno, f"获取文件下载地址失败 (errno={errno})")
-        items = self._json_list(data.get("list", []), "sharedownload")
-        first = items[0] if items else {}
-        if first and not isinstance(first, dict):
-            logger.warning(
-                "sharedownload list 条目格式异常，errno=%s 条目类型=%s",
-                errno, type(first).__name__,
-            )
-            raise BaiduPanError(-1, "文件下载地址响应格式异常")
-        dlink = first.get("dlink", "") if first else data.get("dlink", "")
-        if not dlink:
-            logger.warning(
-                "sharedownload 未返回 dlink，errno=%s list_len=%d 首条目字段=%s",
-                errno, len(items),
-                list(first.keys()) if isinstance(first, dict) else type(first).__name__,
-            )
-            raise BaiduPanError(-1, "百度未返回文件下载地址")
-        return dlink
+            }
+            payload: dict[str, str] = {
+                "encrypt": "0",
+                "product": "share",
+                "uk": str(self._download_share_uk),
+                "primaryid": str(self._download_share_id),
+                "shareid": str(self._download_share_id),
+                "fid_list": json.dumps([fs_id]),
+                "type": "dlink",
+            }
+            if self._download_sekey:
+                payload["extra"] = json.dumps({"sekey": self._download_sekey})
+            data = self._post(f"{BASE_URL}/api/sharedownload", params, payload)
+            errno = data.get("errno", -1)
+            if errno != 0:
+                raise BaiduPanError(errno, f"获取文件下载地址失败 (errno={errno})")
+            lst = data.get("list", [])
+            # 风控响应：list 为非数组的密文字符串。先尝试 JSON 二次解码（部分路径
+            # 会返回 JSON 字符串），失败则视为风控密文，重试等待恢复。
+            if isinstance(lst, str):
+                try:
+                    decoded = json.loads(lst)
+                except (json.JSONDecodeError, ValueError):
+                    decoded = None
+                if not isinstance(decoded, list):
+                    logger.warning(
+                        "sharedownload 返回风控响应(list 非数组)，"
+                        "第 %d/%d 次重试…",
+                        attempt + 1, risk_retries,
+                    )
+                    if attempt < risk_retries - 1:
+                        time.sleep(5 * (2 ** attempt))
+                    continue
+                lst = decoded
+            items = self._json_list(lst, "sharedownload")
+            first = items[0] if items else {}
+            if first and not isinstance(first, dict):
+                logger.warning(
+                    "sharedownload list 条目格式异常，errno=%s 条目类型=%s",
+                    errno, type(first).__name__,
+                )
+                raise BaiduPanError(-1, "文件下载地址响应格式异常")
+            dlink = first.get("dlink", "") if first else data.get("dlink", "")
+            if not dlink:
+                logger.warning(
+                    "sharedownload 未返回 dlink，errno=%s list_len=%d 首条目字段=%s",
+                    errno, len(items),
+                    list(first.keys()) if isinstance(first, dict) else type(first).__name__,
+                )
+                raise BaiduPanError(-1, "百度未返回文件下载地址")
+            return dlink
+        raise BaiduPanError(-65, "sharedownload 风控响应未恢复，请稍后重试")
 
     def download_share_file(self, fs_id: int, destination: str) -> int:
         """流式下载分享文件到 destination，返回写入字节数。"""
