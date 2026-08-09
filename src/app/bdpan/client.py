@@ -688,9 +688,18 @@ class BaiduPanClient:
         items = self._json_list(data.get("list", []), "sharedownload")
         first = items[0] if items else {}
         if first and not isinstance(first, dict):
+            logger.warning(
+                "sharedownload list 条目格式异常，errno=%s 条目类型=%s",
+                errno, type(first).__name__,
+            )
             raise BaiduPanError(-1, "文件下载地址响应格式异常")
         dlink = first.get("dlink", "") if first else data.get("dlink", "")
         if not dlink:
+            logger.warning(
+                "sharedownload 未返回 dlink，errno=%s list_len=%d 首条目字段=%s",
+                errno, len(items),
+                list(first.keys()) if isinstance(first, dict) else type(first).__name__,
+            )
             raise BaiduPanError(-1, "百度未返回文件下载地址")
         return dlink
 
@@ -807,6 +816,21 @@ class BaiduPanClient:
     def _json_list(value: Any, context: str) -> list[Any]:
         if isinstance(value, list):
             return value
+        # 百度偶尔会把 list 字段以 JSON 字符串形式返回（二次编码），
+        # 例如 sharedownload 在部分风控路径下返回 "[{...}]" 而非数组。
+        # 先尝试解码还原，避免把可恢复的响应误判为格式异常而中止同步。
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, list):
+                logger.info("%s 响应 list 为 JSON 字符串，已解码还原", context)
+                return decoded
+        logger.warning(
+            "%s 响应 list 格式异常，类型=%s 值=%.300r",
+            context, type(value).__name__, value,
+        )
         raise BaiduPanError(-1, f"{context} 响应列表格式异常")
 
     def close(self) -> None:

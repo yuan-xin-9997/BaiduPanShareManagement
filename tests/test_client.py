@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -237,6 +238,42 @@ class ShareDownloadTests(unittest.TestCase):
 
         with self.assertRaisesRegex(BaiduPanError, "文件下载地址响应格式异常"):
             client.get_share_download_url(307288499661)
+
+    def test_decodes_double_encoded_json_string_list(self) -> None:
+        # 百度偶尔把 sharedownload 的 list 二次编码为 JSON 字符串，
+        # 例如 errno=0 但 list="[{\"dlink\":\"...\"}]"。应当解码后正常取用。
+        client = BaiduPanClient(cookie="test-cookie")
+        client._download_share_id = 11564703787
+        client._download_share_uk = 1732809698
+        client._download_surl = "1example"
+        client.get_bdstoken = Mock(return_value="test-token")
+        client._get = Mock(return_value={
+            "errno": 0,
+            "data": {"sign": "test-sign", "timestamp": 1234567890},
+        })
+        client._post = Mock(return_value={
+            "errno": 0,
+            "list": json.dumps([{"dlink": "https://example.test/file"}]),
+        })
+
+        self.assertEqual(
+            client.get_share_download_url(307288499661),
+            "https://example.test/file",
+        )
+
+    def test_json_list_decodes_json_string_and_rejects_garbage(self) -> None:
+        self.assertEqual(
+            BaiduPanClient._json_list('[{"a": 1}]', "sharedownload"),
+            [{"a": 1}],
+        )
+        # 空 JSON 列表字符串也应还原为空列表
+        self.assertEqual(BaiduPanClient._json_list("[]", "sharedownload"), [])
+        # 非 JSON 字符串仍按格式异常处理
+        with self.assertRaisesRegex(BaiduPanError, "sharedownload 响应列表格式异常"):
+            BaiduPanClient._json_list("not-a-list", "sharedownload")
+        # JSON 但非列表同样拒绝
+        with self.assertRaisesRegex(BaiduPanError, "sharedownload 响应列表格式异常"):
+            BaiduPanClient._json_list('"a-string"', "sharedownload")
 
     def test_dlink_request_uses_only_bduss_and_netdisk_user_agent(self) -> None:
         class Response:
