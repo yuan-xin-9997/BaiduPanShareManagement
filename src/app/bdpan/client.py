@@ -640,8 +640,10 @@ class BaiduPanClient:
             raise BaiduPanError(-1, "尚未准备分享下载会话")
         bdstoken = self._get_share_bdstoken()
         # 百度在风控/限流时，sharedownload 会返回 errno=0 但 list 为一段密文字符串
-        # （非 JSON 数组）。该响应通常为临时性风控，短时间内可能恢复，故重试若干次；
-        # 仍未恢复则按 -65 限流处理，触发更长退避，避免频繁重试加剧风控。
+        # （非 JSON 数组）。该响应通常为临时性风控（观察到会间歇性恢复），故在请求内
+        # 重试若干次等待恢复；仍未恢复则抛出 -1（走 STANDARD 退避，上限 6h）而非 -65
+        # （RISK 退避，上限 24h）：密文为间歇性抖动而非硬性封禁，较短退避能给下一次
+        # 定时同步更多机会撞上恢复窗口，避免被历史失败计数累积压到 24h。
         risk_retries = 4
         for attempt in range(risk_retries):
             config = self._get(
@@ -726,7 +728,7 @@ class BaiduPanClient:
                 )
                 raise BaiduPanError(-1, "百度未返回文件下载地址")
             return dlink
-        raise BaiduPanError(-65, "sharedownload 风控响应未恢复，请稍后重试")
+        raise BaiduPanError(-1, "sharedownload 风控响应未恢复，请稍后重试")
 
     def download_share_file(self, fs_id: int, destination: str) -> int:
         """流式下载分享文件到 destination，返回写入字节数。"""

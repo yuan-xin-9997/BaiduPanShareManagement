@@ -288,7 +288,8 @@ class ShareDownloadTests(unittest.TestCase):
 
     @patch("bdpan.client.time.sleep")
     def test_raises_risk_control_after_retries_exhausted(self, _sleep) -> None:
-        # 风控持续未恢复时，重试耗尽后按 -65 限流抛出，触发更长退避。
+        # 风控持续未恢复时，重试耗尽后按 -1 抛出（STANDARD 退避，上限 6h），
+        # 而非 -65（RISK 退避，上限 24h）：密文为间歇性抖动，较短退避更利于恢复。
         client = BaiduPanClient(cookie="test-cookie")
         client._download_share_id = 11564703787
         client._download_share_uk = 1732808968
@@ -305,7 +306,7 @@ class ShareDownloadTests(unittest.TestCase):
 
         with self.assertRaises(BaiduPanError) as ctx:
             client.get_share_download_url(307288499661)
-        self.assertEqual(ctx.exception.code, -65)
+        self.assertEqual(ctx.exception.code, -1)
         # risk_retries = 4
         self.assertEqual(client._post.call_count, 4)
 
