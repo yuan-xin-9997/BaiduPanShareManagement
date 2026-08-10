@@ -307,8 +307,8 @@ class ShareDownloadTests(unittest.TestCase):
         with self.assertRaises(BaiduPanError) as ctx:
             client.get_share_download_url(307288499661)
         self.assertEqual(ctx.exception.code, -1)
-        # risk_retries = 4
-        self.assertEqual(client._post.call_count, 4)
+        # risk_retries = 8
+        self.assertEqual(client._post.call_count, 8)
 
     def test_json_list_decodes_json_string_and_rejects_garbage(self) -> None:
         self.assertEqual(

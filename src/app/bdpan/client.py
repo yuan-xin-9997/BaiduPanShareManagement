@@ -644,7 +644,8 @@ class BaiduPanClient:
         # 重试若干次等待恢复；仍未恢复则抛出 -1（走 STANDARD 退避，上限 6h）而非 -65
         # （RISK 退避，上限 24h）：密文为间歇性抖动而非硬性封禁，较短退避能给下一次
         # 定时同步更多机会撞上恢复窗口，避免被历史失败计数累积压到 24h。
-        risk_retries = 4
+        # 重试 8 次最大等待约 21 分钟，覆盖大多数间歇性风控场景。
+        risk_retries = 8
         for attempt in range(risk_retries):
             config = self._get(
                 f"{BASE_URL}/share/tplconfig",
