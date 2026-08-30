@@ -229,6 +229,14 @@ def create_app(
     def index() -> FileResponse:
         return FileResponse(PACKAGE_DIR / "web_static" / "index.html")
 
+    @app.get("/favicon.ico")
+    def favicon_ico() -> FileResponse:
+        return FileResponse(PACKAGE_DIR / "web_static" / "favicon.ico")
+
+    @app.get("/favicon.svg")
+    def favicon_svg() -> FileResponse:
+        return FileResponse(PACKAGE_DIR / "web_static" / "favicon.svg")
+
     @app.get("/api/bootstrap")
     def bootstrap(request: Request) -> dict[str, Any]:
         try:

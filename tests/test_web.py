@@ -29,6 +29,18 @@ def test_password_file_login_and_protected_state(tmp_path: Path) -> None:
         }).status_code == 200
 
 
+def test_favicon_served_for_browser_tab(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        ico = client.get("/favicon.ico")
+        assert ico.status_code == 200
+        assert ico.headers["content-type"].startswith("image/")
+        svg = client.get("/favicon.svg")
+        assert svg.status_code == 200
+        assert svg.headers["content-type"].startswith("image/svg")
+        assert '<link rel="icon" href="/favicon.svg"' in client.get("/").text
+
+
 def test_mapping_requires_server_absolute_path(tmp_path: Path) -> None:
     app = create_app(tmp_path)
     with TestClient(app) as client:

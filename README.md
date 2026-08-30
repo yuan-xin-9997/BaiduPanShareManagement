@@ -19,6 +19,7 @@ Windows、Linux、macOS 挂载的 SMB NAS。
 ```text
 src/app/bdpan/          Python 后端与构建后的前端资源
 src/app/frontend/       Vue 3 + Vite 前端源码
+src/app/frontend/public/  浏览器标签页图标等静态资源，构建时拷贝到 web_static
 config/app.json         系统主配置
 data/app.sqlite3        SQLite 数据库（首次运行生成）
 data/password.txt       登录用户来源
