@@ -256,3 +256,5 @@ Cookie”，现有分享链接自动关联到它；重复启动不会创建重�
 - 夸克 API 使用 Web 接口，可能随平台更新或风控失效。可通过环境变量 `QUARK_API_URL` 覆盖 API 基址（默认 `https://drive-pc.quark.cn/1/clouddrive`）。需要有效账号 Cookie；模拟接口测试不能代替真实账号验收。
 - CLI 同样按分享类型分派客户端；例如 `bdpan config --provider quark --name 夸克账号 --cookie '完整Cookie'`，添加分享时可用 `--cookie-id` 指定凭据。
 - Jenkins 增量更新排除 `config/app.json`，仅首次部署复制默认配置，保留线上 data、日志与配置。升级前建议备份 SQLite、secrets.json 和配置文件。
+
+Linux 运维脚本会优先管理已安装的 systemd 单元（环境变量 `BDPAN_SYSTEMD_UNIT`，默认 `baidupan.service`），否则使用原 PID 模式。Jenkins 用户需获准以 sudo 无密码执行对应单元的 start/stop；本次部署已添加仅限该单元启停的规则。

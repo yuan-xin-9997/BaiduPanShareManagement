@@ -3,6 +3,20 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$ROOT/logs" "$ROOT/data"
 PID_FILE="$ROOT/logs/server.pid"
+SYSTEMD_UNIT="${BDPAN_SYSTEMD_UNIT:-baidupan.service}"
+if command -v systemctl >/dev/null && systemctl cat "$SYSTEMD_UNIT" >/dev/null 2>&1; then
+  sudo -n systemctl start "$SYSTEMD_UNIT"
+  PORT="$("${PYTHON:-python3}" -c "import json; print(json.load(open('$ROOT/config/app.json', encoding='utf-8'))['port'])")"
+  for _ in {1..30}; do
+    if systemctl is-active --quiet "$SYSTEMD_UNIT" && curl -fsS --max-time 2 "http://127.0.0.1:$PORT/api/bootstrap" >/dev/null; then
+      echo "systemd: $SYSTEMD_UNIT HTTP=200"
+      exit 0
+    fi
+    sleep 1
+  done
+  systemctl status "$SYSTEMD_UNIT" --no-pager >&2 || true
+  exit 1
+fi
 if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
   echo "服务已运行，PID=$(cat "$PID_FILE")"
   exit 0
