@@ -28,6 +28,7 @@ from .auth import (
     sync_password_file, user_payload, write_password_file,
 )
 from .client import BaiduPanClient, BaiduPanError
+from .providers import create_client, normalize_share, PROVIDERS
 from .config import AppConfig, load_app_config
 from .cookies import (
     ENV_COOKIE_ID, CookieSecretStore, environment_cookie_record, mask_cookie,
@@ -143,7 +144,7 @@ def create_app(
 
     def persist_client_cookie(link: ShareLink, value: str) -> None:
         if link.cookie_id not in {None, ENV_COOKIE_ID}:
-            cookie_secrets.set(int(link.cookie_id), value)
+            cookie_secrets.set(int(link.cookie_id), value, link.provider)
 
     migration_store = db()
     try:
@@ -296,11 +297,11 @@ def create_app(
                 "tasks": app.state.tasks.list_tasks() if "tasks" in pages else [],
                 "runs": store.list_sync_runs() if "tasks" in pages else [],
                 "cookie_options": [
-                    {"id": item.id, "name": item.name, "status": item.status}
+                    {"id": item.id, "name": item.name, "status": item.status, "provider": item.provider}
                     for item in store.list_cookies()
                 ] + ([
                     {"id": ENV_COOKIE_ID, "name": "环境变量 Cookie",
-                     "status": "unknown", "readonly": True}
+                     "status": "unknown", "readonly": True, "provider": "baidu"}
                 ] if os.environ.get("BDPAN_COOKIE") else [])
                 if "shares" in pages else [],
                 "cookie_configured": bool(
@@ -359,17 +360,18 @@ def create_app(
         if not name:
             raise HTTPException(400, "Cookie 名称不能为空")
         try:
-            value = validate_cookie_value(str(body.get("cookie", "")))
+            provider = str(body.get("provider", "baidu"))
+            value = validate_cookie_value(str(body.get("cookie", "")), provider)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         store = db()
         cookie_id: int | None = None
         try:
             try:
-                cookie_id = store.add_cookie(name, mask_cookie(value))
+                cookie_id = store.add_cookie(name, mask_cookie(value), provider)
             except __import__("sqlite3").IntegrityError as exc:
                 raise HTTPException(409, "Cookie 名称已存在") from exc
-            cookie_secrets.set(cookie_id, value)
+            cookie_secrets.set(cookie_id, value, provider)
             return {"id": cookie_id}
         except Exception:
             if cookie_id is not None:
@@ -394,9 +396,12 @@ def create_app(
             if not name:
                 raise HTTPException(400, "Cookie 名称不能为空")
             raw = str(body.get("cookie", "")).strip()
-            value = validate_cookie_value(raw) if raw else None
+            try:
+                value = validate_cookie_value(raw, current.provider) if raw else None
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
             if value:
-                cookie_secrets.set(cookie_id, value)
+                cookie_secrets.set(cookie_id, value, current.provider)
             try:
                 store.update_cookie(
                     cookie_id, name, mask_cookie(value) if value else None
@@ -436,7 +441,7 @@ def create_app(
             item = store.get_cookie(cookie_id)
             if not item:
                 raise HTTPException(404, "Cookie 不存在")
-            client = BaiduPanClient(cookie=cookie_secrets.get(cookie_id))
+            client = BaiduPanClient(cookie=cookie_secrets.get(cookie_id)) if item.provider == "baidu" else create_client(item.provider, cookie=cookie_secrets.get(cookie_id))
             try:
                 client.get_bdstoken()
                 store.update_cookie_status(cookie_id, "valid")
@@ -549,6 +554,11 @@ def create_app(
         if not url:
             raise HTTPException(400, "分享链接不能为空")
         try:
+            provider, url, embedded_password = normalize_share(url)
+            password = password or embedded_password
+        except (ValueError, BaiduPanError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        try:
             cookie_id = int(body["cookie_id"])
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(400, "请选择 Cookie") from exc
@@ -559,25 +569,28 @@ def create_app(
                     raise HTTPException(400, "环境变量 Cookie 不存在")
             elif not store.get_cookie(cookie_id):
                 raise HTTPException(400, "Cookie 不存在")
+            selected = store.get_cookie(cookie_id) if cookie_id != ENV_COOKIE_ID else None
+            if (selected.provider if selected else "baidu") != provider:
+                raise HTTPException(400, "Cookie 与分享链接所属网盘不匹配")
             cookie_snapshot = cookie_secrets.get(cookie_id)
         finally:
             store.close()
 
         def work(progress):
-            progress("正在读取百度网盘目录")
-            client = BaiduPanClient(cookie=cookie_snapshot)
+            progress(f"正在读取{PROVIDERS[provider]}目录")
+            client = (BaiduPanClient(cookie=cookie_snapshot) if provider == "baidu" else create_client(provider, cookie=cookie_snapshot))
             try:
                 info = client.parse_share(url, password)
             finally:
                 if cookie_id != ENV_COOKIE_ID and client.cookie != cookie_snapshot:
-                    cookie_secrets.set(cookie_id, client.cookie)
+                    cookie_secrets.set(cookie_id, client.cookie, provider)
                 client.close()
             store = db()
             try:
                 link_id = store.add_share_link(ShareLink(
                     None, url, info.surl, password, info.title, info.share_id,
                     info.share_uk, "active", time.time(), time.time(), note,
-                    cookie_id,
+                    cookie_id, provider,
                 ))
                 store.add_file_entries([_entry(link_id, item) for item in info.files])
             finally:
@@ -607,6 +620,18 @@ def create_app(
                 elif not store.get_cookie(cookie_id):
                     raise HTTPException(400, "Cookie 不存在")
                 link.cookie_id = cookie_id
+            try:
+                provider, normalized, embedded = normalize_share(link.url)
+            except (ValueError, BaiduPanError) as exc:
+                raise HTTPException(400, str(exc)) from exc
+            if provider != link.provider:
+                raise HTTPException(400, "不可更改分享所属网盘，请新建分享链接")
+            selected = store.get_cookie(link.cookie_id) if link.cookie_id else None
+            if (selected.provider if selected else "baidu") != provider:
+                raise HTTPException(400, "Cookie 与分享链接所属网盘不匹配")
+            link.url = normalized
+            if embedded and not body.get("password"):
+                link.password = embedded
             store.update_share_link(link)
             return {"ok": True}
         finally:
@@ -631,7 +656,7 @@ def create_app(
                 raise ValueError("分享链接不存在")
             cookie_snapshot = cookie_for_link(link)
             progress("正在重新读取远端目录")
-            client = BaiduPanClient(cookie=cookie_snapshot)
+            client = (BaiduPanClient(cookie=cookie_snapshot) if link.provider == "baidu" else create_client(link.provider, cookie=cookie_snapshot))
             try:
                 info = client.parse_share(link.url, link.password)
             finally:

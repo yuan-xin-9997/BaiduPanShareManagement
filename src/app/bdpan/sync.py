@@ -70,7 +70,7 @@ class SyncManager:
     def __init__(
         self,
         db,
-        downloader: Callable[[int, str], int] | None = None,
+        downloader: Callable[[int | str, str], int] | None = None,
         progress_callback: Callable[[str], None] | None = None,
     ):
         """初始化同步管理器。

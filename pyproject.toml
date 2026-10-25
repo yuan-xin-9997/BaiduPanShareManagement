@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bdpan-share-management"
 version = "0.2.0"
-description = "百度网盘分享链接管理工具"
+description = "多网盘分享链接管理工具"
 requires-python = ">=3.10"
 dependencies = [
     "requests>=2.28",

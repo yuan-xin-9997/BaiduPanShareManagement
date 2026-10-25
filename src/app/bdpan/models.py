@@ -35,6 +35,7 @@ class CookieRecord:
     last_validated_at: float = 0
     last_validation_error: str = ""
     readonly: bool = False
+    provider: str = "baidu"
 
 
 @dataclass
@@ -52,7 +53,8 @@ class ShareLink:
     created_at: float       # 添加时间
     last_checked: float     # 最后检查时间
     note: str               # 用户备注
-    cookie_id: int | None = None  # 关联的百度网盘 Cookie
+    cookie_id: int | None = None  # 关联的网盘 Cookie
+    provider: str = "baidu"
 
 
 @dataclass
@@ -61,7 +63,7 @@ class FileEntry:
 
     id: int | None
     share_link_id: int      # 关联的 ShareLink ID
-    fs_id: int              # 百度文件ID
+    fs_id: int | str        # 网盘文件ID；夸克使用 quark_ 前缀避免 SQLite 数字精度损失
     name: str               # 文件名
     path: str               # 在分享中的完整路径
     is_dir: bool            # 是否目录

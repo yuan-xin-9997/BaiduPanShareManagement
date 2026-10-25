@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable
 
 from .client import BaiduPanClient, BaiduPanError
+from .providers import create_client
 from .cookies import redact_sensitive
 from .database import Database
 from .models import ShareLink
@@ -131,7 +132,7 @@ class TaskManager:
                 except TypeError:
                     # 兼容旧的嵌入式调用方；Web 与 CLI 均传入按链接解析函数。
                     cookie_snapshot = self.cookie_getter()  # type: ignore[call-arg]
-                client = BaiduPanClient(cookie=cookie_snapshot)
+                client = BaiduPanClient(cookie=cookie_snapshot) if link.provider == "baidu" else create_client(link.provider, cookie_snapshot)
                 try:
                     client.prepare_share_download(link.url, link.password)
                     manager = SyncManager(

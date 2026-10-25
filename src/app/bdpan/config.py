@@ -59,7 +59,7 @@ def load_app_config(path: str | Path | None = None) -> AppConfig:
         return candidate if candidate.is_absolute() else (root / candidate).resolve()
 
     return AppConfig(
-        app_name=str(raw.get("app_name", "百度网盘分享链接管理工具")),
+        app_name=str(raw.get("app_name", "多网盘分享链接管理工具")),
         host=str(raw.get("host", "127.0.0.1")),
         port=int(raw.get("port", 8000)),
         timezone=str(raw.get("timezone", "Asia/Shanghai")),

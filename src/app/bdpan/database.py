@@ -179,6 +179,10 @@ class Database:
                 "ALTER TABLE sync_mappings ADD COLUMN "
                 "consecutive_failures INTEGER NOT NULL DEFAULT 0"
             )
+        for table in ("share_links", "baidu_cookies"):
+            names = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+            if "provider" not in names:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN provider TEXT NOT NULL DEFAULT 'baidu'")
         share_columns = {
             row["name"] for row in self.conn.execute(
                 "PRAGMA table_info(share_links)"
@@ -278,13 +282,13 @@ class Database:
     # ------------------------------------------------------------------ #
     # Cookie metadata CRUD
     # ------------------------------------------------------------------ #
-    def add_cookie(self, name: str, masked_value: str) -> int:
+    def add_cookie(self, name: str, masked_value: str, provider: str = "baidu") -> int:
         now = __import__("time").time()
         cur = self.conn.execute(
             "INSERT INTO baidu_cookies "
-            "(name, masked_value, status, created_at, updated_at) "
-            "VALUES (?, ?, 'unknown', ?, ?)",
-            (name.strip(), masked_value, now, now),
+            "(name, masked_value, status, created_at, updated_at, provider) "
+            "VALUES (?, ?, 'unknown', ?, ?, ?)",
+            (name.strip(), masked_value, now, now, provider),
         )
         self.conn.commit()
         return int(cur.lastrowid)
@@ -359,7 +363,7 @@ class Database:
 
     def associate_unassigned_links(self, cookie_id: int) -> None:
         self.conn.execute(
-            "UPDATE share_links SET cookie_id = ? WHERE cookie_id IS NULL",
+            "UPDATE share_links SET cookie_id = ? WHERE cookie_id IS NULL AND provider = 'baidu'",
             (cookie_id,),
         )
         self.conn.commit()
@@ -373,12 +377,12 @@ class Database:
             """
             INSERT INTO share_links
                 (url, surl, password, title, share_id, share_uk,
-                 status, created_at, last_checked, note, cookie_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 status, created_at, last_checked, note, cookie_id, provider)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (link.url, link.surl, link.password, link.title, link.share_id,
              link.share_uk, link.status, link.created_at, link.last_checked,
-             link.note, link.cookie_id),
+             link.note, link.cookie_id, link.provider),
         )
         self.conn.commit()
         return int(cur.lastrowid)
@@ -407,12 +411,12 @@ class Database:
             UPDATE share_links SET
                 url = ?, surl = ?, password = ?, title = ?, share_id = ?,
                 share_uk = ?, status = ?, created_at = ?, last_checked = ?,
-                note = ?, cookie_id = ?
+                note = ?, cookie_id = ?, provider = ?
             WHERE id = ?
             """,
             (link.url, link.surl, link.password, link.title, link.share_id,
              link.share_uk, link.status, link.created_at, link.last_checked,
-             link.note, link.cookie_id, link.id),
+             link.note, link.cookie_id, link.provider, link.id),
         )
         self.conn.commit()
 
@@ -736,7 +740,7 @@ class Database:
             status=row["status"], created_at=row["created_at"],
             updated_at=row["updated_at"],
             last_validated_at=row["last_validated_at"],
-            last_validation_error=row["last_validation_error"],
+            last_validation_error=row["last_validation_error"], provider=row["provider"],
         )
 
     @staticmethod
@@ -753,7 +757,7 @@ class Database:
             created_at=row["created_at"],
             last_checked=row["last_checked"],
             note=row["note"],
-            cookie_id=row["cookie_id"],
+            cookie_id=row["cookie_id"], provider=row["provider"],
         )
 
     @staticmethod

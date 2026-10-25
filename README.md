@@ -1,6 +1,6 @@
-# BaiduPanShareManagement
+# 多网盘分享管理（BaiduPanShareManagement）
 
-跨平台的百度网盘分享链接管理与同步 Web 服务。后端使用 Python、FastAPI 和 SQLite，
+跨平台的多网盘分享链接管理与同步 Web 服务（百度网盘、夸克网盘）。后端使用 Python、FastAPI 和 SQLite，
 前端使用 Vue 3。系统支持多用户登录、页面级权限、目录浏览、后台同步、自动调度以及
 Windows、Linux、macOS 挂载的 SMB NAS。
 
@@ -243,3 +243,16 @@ Cookie”，现有分享链接自动关联到它；重复启动不会创建重�
 - [需求规格说明书](docs/需求规格说明书.md)
 - [设计说明书](docs/设计说明书.md)
 - [AGENTS 合规审计](docs/AGENTS合规审计.md)
+
+
+## 多网盘支持（2026-10-25）
+
+- 支持百度网盘、夸克网盘分享的添加、提取码识别、目录索引与浏览、刷新、同步和定时任务。
+- FastAPI、Vue、SQLite 及现有登录、权限、任务中心、同步策略保持兼容；包名、CLI 命令、服务名称和访问地址沿用原值。
+- 分享记录与 Cookie 元数据增加 `provider`（`baidu` / `quark`）。启动时自动补充数据库字段，历史记录默认为百度网盘，无需手工迁移。
+- 在系统配置页添加 Cookie 时选择网盘类型：百度需要 `BDUSS`，夸克需要 `__puus`。Cookie 原文继续仅存于服务端 secrets.json；分享与凭据类型必须一致，已建分享不可直接切换网盘类型。
+- 添加分享时可直接粘贴 `https://pan.quark.cn/s/分享ID?pwd=提取码` 或带中文提取码的文本，选择同网盘凭据。
+- 夸克下载先将文件转存到所选账号的根目录，再获取下载地址。转存文件保留、占用网盘容量；再次同步更新文件可能产生额外转存。容量不足或接口拒绝时任务失败并保留错误日志。
+- 夸克 API 使用 Web 接口，可能随平台更新或风控失效。可通过环境变量 `QUARK_API_URL` 覆盖 API 基址（默认 `https://drive-pc.quark.cn/1/clouddrive`）。需要有效账号 Cookie；模拟接口测试不能代替真实账号验收。
+- CLI 同样按分享类型分派客户端；例如 `bdpan config --provider quark --name 夸克账号 --cookie '完整Cookie'`，添加分享时可用 `--cookie-id` 指定凭据。
+- Jenkins 增量更新排除 `config/app.json`，仅首次部署复制默认配置，保留线上 data、日志与配置。升级前建议备份 SQLite、secrets.json 和配置文件。

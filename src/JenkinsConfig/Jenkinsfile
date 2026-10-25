@@ -23,8 +23,12 @@ pipeline {
                     mkdir -p "$DEPLOY_DIR" "$DEPLOY_DIR/data" "$DEPLOY_DIR/logs"
                     rsync -a --delete \
                       --exclude='.git/' --exclude='.venv/' \
-                      --exclude='data/' --exclude='logs/' \
+                      --exclude='data/' --exclude='logs/' --exclude='config/app.json' \
                       "$WORKSPACE/" "$DEPLOY_DIR/"
+                    if [ ! -f "$DEPLOY_DIR/config/app.json" ]; then
+                      mkdir -p "$DEPLOY_DIR/config"
+                      cp "$WORKSPACE/config/app.json" "$DEPLOY_DIR/config/app.json"
+                    fi
                     if [ ! -f "$DEPLOY_DIR/data/password.txt" ]; then
                       cp "$WORKSPACE/data/password.txt" "$DEPLOY_DIR/data/password.txt"
                     fi

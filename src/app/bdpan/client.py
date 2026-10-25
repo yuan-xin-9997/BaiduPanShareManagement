@@ -79,7 +79,7 @@ _RE_ISDIR = re.compile(r'"isdir":(\d+?),"')
 class ShareFile:
     """分享链接中的单个文件/目录。"""
 
-    fs_id: int
+    fs_id: int | str
     name: str
     is_dir: bool
     size: int

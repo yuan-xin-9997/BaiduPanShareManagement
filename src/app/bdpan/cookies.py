@@ -14,11 +14,11 @@ from .models import CookieRecord
 ENV_COOKIE_ID = 0
 ENV_COOKIE_NAME = "环境变量 Cookie"
 SENSITIVE_PATTERN = re.compile(
-    r"(?i)(BDUSS|STOKEN|BDCLND|PANPSC|BAIDUID)\s*=\s*([^;\s]+)"
+    r"(?i)(BDUSS|STOKEN|BDCLND|PANPSC|BAIDUID|__puus|__pus)\s*=\s*([^;\s]+)"
 )
 
 
-def validate_cookie_value(value: str) -> str:
+def validate_cookie_value(value: str, provider: str = "baidu") -> str:
     value = value.strip()
     if not value or "\n" in value or "\r" in value:
         raise ValueError("Cookie 格式无效")
@@ -26,8 +26,11 @@ def validate_cookie_value(value: str) -> str:
         part.split("=", 1)[0].strip().upper()
         for part in value.split(";") if "=" in part
     }
-    if "BDUSS" not in names:
-        raise ValueError("Cookie 必须包含 BDUSS")
+    required = {"baidu": "BDUSS", "quark": "__PUUS"}.get(provider)
+    if not required:
+        raise ValueError("不支持的网盘类型")
+    if required not in names:
+        raise ValueError(f"Cookie 必须包含 {required}")
     return value
 
 
@@ -79,12 +82,12 @@ class CookieSecretStore:
             raise ValueError("关联的 Cookie 不存在或秘密已丢失")
         return str(value)
 
-    def set(self, cookie_id: int, value: str) -> None:
+    def set(self, cookie_id: int, value: str, provider: str = "baidu") -> None:
         data = self._read()
         cookies = data.setdefault("cookies", {})
         if not isinstance(cookies, dict):
             cookies = data["cookies"] = {}
-        cookies[str(cookie_id)] = validate_cookie_value(value)
+        cookies[str(cookie_id)] = validate_cookie_value(value, provider)
         self._write(data)
 
     def delete(self, cookie_id: int) -> None:

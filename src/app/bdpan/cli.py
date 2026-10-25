@@ -26,6 +26,7 @@ import sys
 import time
 from pathlib import Path
 
+from .providers import create_client, normalize_share
 from .models import FileEntry, ShareLink, SyncMapping
 from .database import Database
 from .sync import SyncManager, SyncStrategy
@@ -87,13 +88,20 @@ def cmd_add(args: argparse.Namespace) -> None:
     """添加分享链接。"""
     from .client import BaiduPanClient
 
-    url = args.url
-    password = args.password or ""
+    provider, url, embedded = normalize_share(args.url)
+    password = args.password or embedded
 
     # 尝试解析链接
     cookie_id = resolve_cookie_id(cookie_id=args.cookie_id)
     cookie = get_cookie(cookie_id=cookie_id)
-    client = BaiduPanClient(cookie=cookie)
+    store = get_db()
+    try:
+        record = store.get_cookie(cookie_id) if cookie_id else None
+        if (record.provider if record else "baidu") != provider:
+            raise ValueError("Cookie 与分享链接所属网盘不匹配，请使用 --cookie-id")
+    finally:
+        store.close()
+    client = create_client(provider, cookie=cookie)
 
     print(f"正在解析分享链接: {url}")
     try:
@@ -116,6 +124,7 @@ def cmd_add(args: argparse.Namespace) -> None:
         last_checked=time.time(),
         note=args.note or "",
         cookie_id=cookie_id,
+        provider=provider,
     )
     link_id = db.add_share_link(link)
 
@@ -218,7 +227,7 @@ def cmd_refresh(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     cookie = get_cookie(link)
-    client = BaiduPanClient(cookie=cookie)
+    client = create_client(link.provider, cookie=cookie)
 
     print(f"正在刷新: {link.title}")
     try:
@@ -345,7 +354,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
     if not link:
         print("映射关联的分享链接不存在")
         sys.exit(1)
-    client = BaiduPanClient(cookie=get_cookie(link))
+    client = create_client(link.provider, cookie=get_cookie(link))
     try:
         client.prepare_share_download(link.url, link.password)
         manager = SyncManager(db, client.download_share_file)
@@ -372,7 +381,7 @@ def cmd_sync_all(args: argparse.Namespace) -> None:
             print(f"  [{mapping.id}] 分享链接不存在，已跳过")
             continue
         from .client import BaiduPanClient
-        client = BaiduPanClient(cookie=get_cookie(link))
+        client = create_client(link.provider, cookie=get_cookie(link))
         try:
             client.prepare_share_download(link.url, link.password)
             manager = SyncManager(db, client.download_share_file)
@@ -389,15 +398,17 @@ def cmd_config(args: argparse.Namespace) -> None:
     secret_store = CookieSecretStore(config.secret_file)
     secret_store.migrate_legacy(db)
     if args.cookie:
-        value = validate_cookie_value(args.cookie)
+        value = validate_cookie_value(args.cookie, args.provider)
         name = (args.name or "默认 Cookie").strip()
         record = db.get_cookie_by_name(name)
         if record and record.id is not None:
-            secret_store.set(record.id, value)
+            if record.provider != args.provider:
+                raise ValueError("已有凭据所属网盘不匹配，请使用不同名称")
+            secret_store.set(record.id, value, args.provider)
             db.update_cookie(record.id, name, mask_cookie(value))
         else:
-            cookie_id = db.add_cookie(name, mask_cookie(value))
-            secret_store.set(cookie_id, value)
+            cookie_id = db.add_cookie(name, mask_cookie(value), args.provider)
+            secret_store.set(cookie_id, value, args.provider)
         print("✅ Cookie 已保存")
         db.close()
         return
@@ -476,6 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
     # config
     p = sub.add_parser("config", help="查看或设置配置")
     p.add_argument("--cookie", help="设置百度网盘 Cookie")
+    p.add_argument("--provider", choices=["baidu", "quark"], default="baidu", help="网盘类型")
     p.add_argument("--name", help="Cookie 名称")
     p.set_defaults(func=cmd_config)
 
