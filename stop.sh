@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="${BDPAN_ROOT:-$(cd "$(dirname "$0")" && pwd)}"
 PID_FILE="$ROOT/logs/server.pid"
 SYSTEMD_UNIT="${BDPAN_SYSTEMD_UNIT:-baidupan.service}"
 if command -v systemctl >/dev/null && systemctl cat "$SYSTEMD_UNIT" >/dev/null 2>&1; then

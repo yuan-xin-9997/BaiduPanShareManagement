@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="${BDPAN_ROOT:-$(cd "$(dirname "$0")" && pwd)}"
 PID_FILE="$ROOT/logs/server.pid"
 PORT="$(${PYTHON:-python3} -c "import json; print(json.load(open('$ROOT/config/app.json', encoding='utf-8'))['port'])")"
 SYSTEMD_UNIT="${BDPAN_SYSTEMD_UNIT:-baidupan.service}"
