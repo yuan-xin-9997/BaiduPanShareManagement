@@ -14,15 +14,24 @@ class QuarkPanClient:
     def __init__(self, cookie: str, timeout: int = 30):
         self.cookie, self.timeout = cookie, timeout
         self.base_url = os.environ.get("QUARK_API_URL", "https://drive-pc.quark.cn/1/clouddrive").rstrip("/")
+        self.share_base_url = os.environ.get(
+            "QUARK_SHARE_API_URL", "https://drive-h.quark.cn/1/clouddrive"
+        ).rstrip("/")
         self.session = requests.Session()
         self.session.headers.update({"Cookie": cookie, "Referer": "https://pan.quark.cn/", "User-Agent": "Mozilla/5.0"})
         self.pwd_id = self.stoken = self.password = ""
         self.tokens = {}
         self.saved_fids = {}
 
-    def _request(self, method, path, **kwargs):
+    def _request(self, method, path, base=None, **kwargs):
         try:
-            response = self.session.request(method, self.base_url + path, params={"pr": "ucpro", "fr": "pc", **kwargs.pop("params", {})}, timeout=self.timeout, **kwargs)
+            response = self.session.request(
+                method,
+                (base or self.base_url) + path,
+                params={"pr": "ucpro", "fr": "pc", **kwargs.pop("params", {})},
+                timeout=self.timeout,
+                **kwargs,
+            )
             response.raise_for_status()
             result = response.json()
         except (requests.RequestException, ValueError) as exc:
@@ -44,7 +53,16 @@ class QuarkPanClient:
             raise ValueError("分享链接与网盘类型不匹配")
         self.password = password or embedded
         self.pwd_id = url.rsplit("/", 1)[-1]
-        data = self._request("POST", "/share/sharepage/token", json={"pwd_id": self.pwd_id, "passcode": password or embedded})
+        data = self._request(
+            "POST",
+            "/share/sharepage/token",
+            base=self.share_base_url,
+            json={
+                "pwd_id": self.pwd_id,
+                "passcode": password or embedded,
+                "support_visit_limit_private_share": True,
+            },
+        )
         self.stoken = data.get("stoken", "")
         if not self.stoken:
             raise BaiduPanError(-1, "夸克分享令牌缺失")
@@ -58,7 +76,22 @@ class QuarkPanClient:
             nonlocal title
             page = 1
             while True:
-                data = self._request("GET", "/share/sharepage/detail", params={"pwd_id": self.pwd_id, "stoken": self.stoken, "pdir_fid": parent, "_page": page, "_size": 100, "_sort": "file_type:asc,file_name:asc", "_fetch_total": 1})
+                data = self._request(
+                    "GET",
+                    "/share/sharepage/detail",
+                    base=self.share_base_url,
+                    params={
+                        "ver": 2,
+                        "pwd_id": self.pwd_id,
+                        "stoken": self.stoken,
+                        "pdir_fid": parent,
+                        "force": 0,
+                        "_page": page,
+                        "_size": 100,
+                        "_sort": "file_type:asc,file_name:asc",
+                        "_fetch_total": 1,
+                    },
+                )
                 if not isinstance(data, dict) or not isinstance(data.get("list"), list):
                     raise BaiduPanError(-1, "夸克目录响应不完整，已停止索引")
                 title = title or data.get("share", {}).get("title", "")

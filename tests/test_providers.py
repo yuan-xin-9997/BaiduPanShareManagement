@@ -46,6 +46,23 @@ def test_provider_persistence_and_file_id_precision(tmp_path):
     db.close()
 
 
+def test_quark_share_endpoints_use_share_host_and_login_flag(tmp_path):
+    client = QuarkPanClient('__puus=secret')
+    client._request = Mock(side_effect=[
+        {'stoken': 's'},
+        {'list': [], 'metadata': {'_total': 0}, 'share': {'title': 'title'}},
+    ])
+    info = client.parse_share('https://pan.quark.cn/s/test?pwd=abcd')
+    assert info.title == 'title'
+    token_call = client._request.call_args_list[0]
+    assert token_call.kwargs['base'] == 'https://drive-h.quark.cn/1/clouddrive'
+    assert token_call.kwargs['json']['support_visit_limit_private_share'] is True
+    detail_call = client._request.call_args_list[1]
+    assert detail_call.kwargs['base'] == 'https://drive-h.quark.cn/1/clouddrive'
+    assert detail_call.kwargs['params']['ver'] == 2
+    client.close()
+
+
 def test_quark_recursive_pagination_and_download(tmp_path):
     client = QuarkPanClient('__puus=secret')
     root = [{'fid': str(i), 'file_name': f'{i}.txt', 'dir': False, 'share_fid_token': f't{i}'} for i in range(100)]
