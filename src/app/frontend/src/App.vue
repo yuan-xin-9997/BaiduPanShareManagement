@@ -56,6 +56,21 @@ function showToast(message) {
   setTimeout(() => { if (toastText.value === message) toastText.value = '' }, 3500)
 }
 function formatTime(value) { return value ? new Date(value * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '从未' }
+const shareStatusLabels = { active: '有效', invalid: '已失效', expired: '已过期', unknown: '待确认', blocked: '受限' }
+const shareStaleSeconds = 30 * 24 * 60 * 60
+function isShareStatusStale(link) {
+  return link.status === 'active' && (!link.last_checked || Date.now() / 1000 - link.last_checked > shareStaleSeconds)
+}
+function shareStatusClass(link) { return isShareStatusStale(link) ? 'unknown' : (link.status || 'unknown') }
+function shareStatusText(link) {
+  if (isShareStatusStale(link)) return '待检测'
+  return shareStatusLabels[link.status] || link.status || '未知'
+}
+function shareStatusHint(link) {
+  if (isShareStatusStale(link)) return `距上次成功检测已超过 30 天（${formatTime(link.last_checked)}），建议刷新确认`
+  if (link.status === 'invalid' || link.status === 'expired') return '网盘明确返回分享不存在、已取消或已过期'
+  return ''
+}
 function formatDuration(startedAt, finishedAt) {
   if (!startedAt || !finishedAt) return '进行中'
   let seconds = Math.max(0, Math.round(finishedAt - startedAt))
@@ -225,7 +240,7 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
       <section v-if="activeView === 'shares'" class="content">
         <div class="toolbar"><div class="stats"><strong>{{ state.links.length }}</strong><span>个分享链接</span></div><button class="primary" @click="openShare()">＋ 添加链接</button></div>
         <div v-if="!state.links.length" class="empty"><b>还没有分享链接</b><span>添加一个多网盘分享链接，系统会自动建立目录索引。</span></div>
-        <div v-else class="item-list"><article v-for="link in state.links" :key="link.id" class="item-card"><div class="file-icon">链</div><div class="grow"><div class="item-title"><h3>{{ link.title || link.url }}</h3><span :class="['pill', link.status]">{{ link.status }}</span></div><p>{{ link.url }}</p><div class="meta"><span>{{ link.provider === "quark" ? "夸克网盘" : "百度网盘" }}</span><span>{{ link.file_count }} 个条目</span><span>更新于 {{ formatTime(link.last_checked) }}</span><span>Cookie：{{ state.cookie_options.find(item => item.id === link.cookie_id)?.name || '未关联' }}</span><span v-if="link.note">{{ link.note }}</span></div></div><div class="actions"><button @click="browse(link)">浏览</button><button @click="refreshShare(link.id)">刷新</button><button @click="openShare(link)">编辑</button><button class="danger" @click="deleteShare(link.id)">删除</button></div></article></div>
+        <div v-else class="item-list"><article v-for="link in state.links" :key="link.id" class="item-card"><div class="file-icon">链</div><div class="grow"><div class="item-title"><h3>{{ link.title || link.url }}</h3><span :class="['pill', shareStatusClass(link)]" :title="shareStatusHint(link)">{{ shareStatusText(link) }}</span></div><p>{{ link.url }}</p><div class="meta"><span>{{ link.provider === "quark" ? "夸克网盘" : "百度网盘" }}</span><span>{{ link.file_count }} 个条目</span><span>检测于 {{ formatTime(link.last_checked) }}</span><span>Cookie：{{ state.cookie_options.find(item => item.id === link.cookie_id)?.name || '未关联' }}</span><span v-if="link.note">{{ link.note }}</span></div></div><div class="actions"><button @click="browse(link)">浏览</button><button @click="refreshShare(link.id)">刷新</button><button @click="openShare(link)">编辑</button><button class="danger" @click="deleteShare(link.id)">删除</button></div></article></div>
         <section v-if="browser.open" class="drawer"><div class="drawer-head"><div><p class="eyebrow">DIRECTORY</p><h2>{{ browser.title }}</h2><div class="breadcrumbs"><button @click="browse({ id: browser.linkId, title: browser.title }, '')">根目录</button><template v-for="crumb in crumbs" :key="crumb.path"><span>/</span><button @click="browse({ id: browser.linkId, title: browser.title }, crumb.path)">{{ crumb.name }}</button></template></div></div><button class="close" @click="browser.open = false">×</button></div><table><thead><tr><th>名称</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="entry in browser.entries" :key="entry.id"><td><button v-if="entry.is_dir" class="entry" @click="browse({ id: browser.linkId, title: browser.title }, entry.path)">▰ {{ entry.name }}</button><span v-else>▤ {{ entry.name }}</span></td><td>{{ entry.is_dir ? '—' : formatSize(entry.size) }}</td><td>{{ formatTime(entry.modified_time) }}</td></tr><tr v-if="!browser.entries.length"><td colspan="3" class="muted">此目录为空</td></tr></tbody></table></section>
       </section>
 

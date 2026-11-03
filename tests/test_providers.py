@@ -9,7 +9,7 @@ from bdpan.client import BaiduPanError
 from bdpan.cookies import validate_cookie_value, redact_sensitive
 from bdpan.database import Database
 from bdpan.models import ShareLink, FileEntry
-from bdpan.providers import normalize_share
+from bdpan.providers import is_share_invalid_error, normalize_share
 from bdpan.quark import QuarkPanClient
 from bdpan.web import create_app
 
@@ -21,6 +21,26 @@ def test_link_detection_and_password():
     for url in ['https://pan.quark.cn.evil/s/abc', 'https://pan.quark.cn/other', 'https://example.org/s/a']:
         with pytest.raises(ValueError):
             normalize_share(url)
+
+
+def test_share_invalid_error_classification():
+    assert is_share_invalid_error(BaiduPanError(-8, share_invalid=True))
+    assert is_share_invalid_error(BaiduPanError(-7, share_invalid=True))
+    assert is_share_invalid_error(BaiduPanError(-1, "已失效", share_invalid=True))
+    quark_gone = BaiduPanError(-1, "分享地址已过期")
+    quark_gone.quark_code = 41019
+    assert is_share_invalid_error(quark_gone)
+    quark_blocked = BaiduPanError(-1, "分享受限")
+    quark_blocked.quark_code = 41031
+    assert is_share_invalid_error(quark_blocked)
+
+    assert not is_share_invalid_error(BaiduPanError(-65))
+    missing_password = BaiduPanError(-9)
+    assert not is_share_invalid_error(missing_password)
+    quark_needs_password = BaiduPanError(-1, "需要提取码")
+    quark_needs_password.quark_code = 41008
+    assert not is_share_invalid_error(quark_needs_password)
+    assert not is_share_invalid_error(RuntimeError("network error"))
 
 
 def test_cookie_validation_and_redaction():
@@ -202,3 +222,75 @@ def test_quark_add_refresh_and_browse(tmp_path, monkeypatch):
         wait(client.post(f"/api/shares/{share['id']}/refresh").json()['task_id'])
         assert client.put(f"/api/shares/{share['id']}", json={'url': 'https://pan.baidu.com/s/1test'}).status_code == 400
         assert client.get('/').status_code == 200
+
+
+def test_refresh_gone_share_marks_link_invalid(tmp_path, monkeypatch):
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        client.post('/api/login', json={'username': 'admin', 'password': 'admin123'})
+        cookie = client.post('/api/cookies', json={
+            'name': 'Baidu', 'provider': 'baidu', 'cookie': 'BDUSS=test',
+        }).json()['id']
+        store = Database(app.state.db_path)
+        link_id = store.add_share_link(ShareLink(
+            None, 'https://pan.baidu.com/s/1test', 'test', '', '已失效分享',
+            1, 2, 'active', time.time(), time.time(), '', cookie, 'baidu',
+        ))
+        store.close()
+
+        fake = Mock()
+        fake.cookie = 'BDUSS=test'
+        fake.parse_share.side_effect = BaiduPanError(
+            -8, "该分享已经过期", share_invalid=True,
+        )
+        monkeypatch.setattr('bdpan.web.BaiduPanClient', lambda cookie: fake)
+
+        task_id = client.post(f'/api/shares/{link_id}/refresh').json()['task_id']
+        for _ in range(100):
+            state = vars(app.state.tasks.tasks[task_id])
+            if state['status'] in ('success', 'failed'):
+                assert state['status'] == 'failed'
+                break
+            time.sleep(.01)
+        else:
+            pytest.fail('Task timed out')
+
+        store = Database(app.state.db_path)
+        try:
+            link = store.get_share_link(link_id)
+            assert link.status == 'invalid'
+        finally:
+            store.close()
+
+
+def test_refresh_transient_error_keeps_active_status(tmp_path, monkeypatch):
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        client.post('/api/login', json={'username': 'admin', 'password': 'admin123'})
+        cookie = client.post('/api/cookies', json={
+            'name': 'Baidu', 'provider': 'baidu', 'cookie': 'BDUSS=test',
+        }).json()['id']
+        store = Database(app.state.db_path)
+        link_id = store.add_share_link(ShareLink(
+            None, 'https://pan.baidu.com/s/1test', 'test', '', '风控分享',
+            1, 2, 'active', time.time(), time.time(), '', cookie, 'baidu',
+        ))
+        store.close()
+
+        fake = Mock()
+        fake.cookie = 'BDUSS=test'
+        fake.parse_share.side_effect = BaiduPanError(-65)
+        monkeypatch.setattr('bdpan.web.BaiduPanClient', lambda cookie: fake)
+
+        task_id = client.post(f'/api/shares/{link_id}/refresh').json()['task_id']
+        for _ in range(100):
+            state = vars(app.state.tasks.tasks[task_id])
+            if state['status'] in ('success', 'failed'):
+                break
+            time.sleep(.01)
+
+        store = Database(app.state.db_path)
+        try:
+            assert store.get_share_link(link_id).status == 'active'
+        finally:
+            store.close()

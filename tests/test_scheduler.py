@@ -53,6 +53,7 @@ def test_failed_sync_is_not_resubmitted_until_backoff_expires(
             assert mapping is not None
             assert mapping.consecutive_failures == 1
             assert mapping.retry_after - mapping.last_attempted >= 6 * 60 * 60
+            assert store.get_share_link(mapping.share_link_id).status == "active"
 
         submit = Mock(return_value="scheduled-task")
         manager.submit_sync = submit
@@ -61,6 +62,35 @@ def test_failed_sync_is_not_resubmitted_until_backoff_expires(
 
         assert manager._scheduler_tick(mapping.retry_after) == [mapping_id]
         submit.assert_called_once_with(mapping_id, "scheduled")
+    finally:
+        manager.close()
+
+
+def test_sync_gone_share_marks_link_invalid(tmp_path: Path) -> None:
+    db_path = tmp_path / "app.sqlite3"
+    mapping_id = _seed_auto_mapping(db_path, tmp_path / "target")
+    client = Mock()
+    client.cookie = "BDUSS=test"
+    client.prepare_share_download.side_effect = BaiduPanError(
+        -8, "该分享已经过期", share_invalid=True,
+    )
+    manager = TaskManager(
+        str(db_path), lambda _link: "BDUSS=test", scheduler_enabled=False,
+    )
+    try:
+        with (
+            patch("bdpan.web_tasks.ensure_storage_ready"),
+            patch("bdpan.web_tasks.BaiduPanClient", return_value=client),
+        ):
+            task_id = manager.submit_sync(mapping_id)
+            assert task_id is not None
+            _wait_for_terminal(manager, task_id)
+            assert manager.tasks[task_id].status == "failed"
+
+        with Database(str(db_path)) as store:
+            mapping = store.get_sync_mapping(mapping_id)
+            assert mapping is not None
+            assert store.get_share_link(mapping.share_link_id).status == "invalid"
     finally:
         manager.close()
 

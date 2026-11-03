@@ -28,7 +28,9 @@ from .auth import (
     sync_password_file, user_payload, write_password_file,
 )
 from .client import BaiduPanClient, BaiduPanError
-from .providers import create_client, normalize_share, PROVIDERS
+from .providers import (
+    create_client, is_share_invalid_error, normalize_share, PROVIDERS,
+)
 from .config import AppConfig, load_app_config
 from .cookies import (
     ENV_COOKIE_ID, CookieSecretStore, environment_cookie_record, mask_cookie,
@@ -658,7 +660,20 @@ def create_app(
             progress("正在重新读取远端目录")
             client = (BaiduPanClient(cookie=cookie_snapshot) if link.provider == "baidu" else create_client(link.provider, cookie=cookie_snapshot))
             try:
-                info = client.parse_share(link.url, link.password)
+                try:
+                    info = client.parse_share(link.url, link.password)
+                except Exception as exc:
+                    if is_share_invalid_error(exc):
+                        status_store = db()
+                        try:
+                            current = status_store.get_share_link(link_id)
+                            if current:
+                                current.status = "invalid"
+                                current.last_checked = time.time()
+                                status_store.update_share_link(current)
+                        finally:
+                            status_store.close()
+                    raise
             finally:
                 if client.cookie != cookie_snapshot:
                     persist_client_cookie(link, client.cookie)

@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-from .providers import create_client, normalize_share
+from .providers import create_client, is_share_invalid_error, normalize_share
 from .models import FileEntry, ShareLink, SyncMapping
 from .database import Database
 from .sync import SyncManager, SyncStrategy
@@ -234,9 +234,10 @@ def cmd_refresh(args: argparse.Namespace) -> None:
         share_info = client.parse_share(link.url, link.password)
     except Exception as e:
         print(f"刷新失败: {e}")
-        link.status = "invalid"
-        link.last_checked = time.time()
-        db.update_share_link(link)
+        if is_share_invalid_error(e):
+            link.status = "invalid"
+            link.last_checked = time.time()
+            db.update_share_link(link)
         sys.exit(1)
 
     # 清空旧条目，写入新条目

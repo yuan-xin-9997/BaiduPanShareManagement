@@ -102,11 +102,19 @@ class ShareInfo:
 
 
 class BaiduPanError(Exception):
-    """百度网盘 API 错误。"""
+    """百度网盘 API 错误。
 
-    def __init__(self, code: int, message: str = "") -> None:
+    ``share_invalid`` 只用于网盘明确返回“分享不存在/已失效/已过期”的场景。
+    网络错误、提取码错误和风控等无法确认分享死活的异常不得设置该标记，
+    避免把暂时不可用的链接误判为失效。
+    """
+
+    def __init__(
+        self, code: int, message: str = "", *, share_invalid: bool = False,
+    ) -> None:
         self.code = code
         self.message = message or ERROR_CODES.get(code, f"未知错误 (code={code})")
+        self.share_invalid = share_invalid
         super().__init__(self.message)
 
 
@@ -389,7 +397,14 @@ class BaiduPanClient:
 
         errno = result.get("errno", -1)
         if errno != 0:
-            raise BaiduPanError(errno)
+            gone_messages = {
+                -7: "该分享已删除或已取消",
+                -8: "该分享已经过期",
+            }
+            raise BaiduPanError(
+                errno, gone_messages.get(errno, ""),
+                share_invalid=errno in gone_messages,
+            )
 
         randsk = result.get("randsk", "")
         if not randsk:
@@ -411,6 +426,15 @@ class BaiduPanClient:
         """
         html = self._get_html(share_url)
 
+        # 失效分享页由服务端直接渲染固定提示，优先识别，避免页面残留脚本
+        # 中的伪参数让失效链接继续显示为 active。
+        if any(sentinel in html for sentinel in (
+            "链接不存在", "分享已取消", "你访问的页面不存在", "分享已经过期",
+        )):
+            raise BaiduPanError(
+                -1, "分享链接不存在、已取消或已过期", share_invalid=True,
+            )
+
         share_ids = _RE_SHAREID.findall(html)
         share_uks = _RE_SHARE_UK.findall(html)
         fs_ids = _RE_FS_ID.findall(html)
@@ -418,6 +442,8 @@ class BaiduPanClient:
         isdirs = _RE_ISDIR.findall(html)
 
         if not all([share_ids, share_uks, fs_ids, filenames, isdirs]):
+            # 页面结构变化、登录墙或反爬也可能导致解析失败，无法据此确认
+            # 分享已失效，因此不设置 share_invalid。
             raise BaiduPanError(-1, "解析分享页面失败，可能链接已失效")
 
         # 提取标题

@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable
 
 from .client import BaiduPanClient, BaiduPanError
-from .providers import create_client
+from .providers import create_client, is_share_invalid_error
 from .cookies import redact_sensitive
 from .database import Database
 from .models import ShareLink
@@ -134,7 +134,18 @@ class TaskManager:
                     cookie_snapshot = self.cookie_getter()  # type: ignore[call-arg]
                 client = BaiduPanClient(cookie=cookie_snapshot) if link.provider == "baidu" else create_client(link.provider, cookie_snapshot)
                 try:
-                    client.prepare_share_download(link.url, link.password)
+                    try:
+                        client.prepare_share_download(link.url, link.password)
+                    except Exception as exc:
+                        if is_share_invalid_error(exc):
+                            link.status = "invalid"
+                            link.last_checked = time.time()
+                            db.update_share_link(link)
+                        raise
+                    else:
+                        link.status = "active"
+                        link.last_checked = time.time()
+                        db.update_share_link(link)
                     manager = SyncManager(
                         db, client.download_share_file,
                         progress_callback=lambda path: progress(f"正在处理：{path}"),

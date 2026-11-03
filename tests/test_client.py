@@ -125,6 +125,16 @@ class VerifyPasswordTests(unittest.TestCase):
         ):
             client.verify_password("1example", "6666")
 
+    def test_expired_share_errno_marks_error_as_gone(self) -> None:
+        client = self._client()
+        client._post = Mock(return_value={"errno": -8})
+
+        with self.assertRaises(BaiduPanError) as context:
+            client.verify_password("1example", "6666")
+
+        self.assertTrue(context.exception.share_invalid)
+        self.assertIn("过期", str(context.exception))
+
 
 class SharePageParsingTests(unittest.TestCase):
     def test_parses_current_yun_data_format(self) -> None:
@@ -140,6 +150,15 @@ class SharePageParsingTests(unittest.TestCase):
         self.assertEqual(result["shareid"], "11564703787")
         self.assertEqual(result["share_uk"], "1732809698")
         self.assertEqual(result["filenames"], ["7大投行"])
+
+    def test_dead_share_page_is_marked_as_gone(self) -> None:
+        client = BaiduPanClient(cookie="test-cookie")
+        client._get_html = Mock(return_value="<html>链接不存在</html>")
+
+        with self.assertRaises(BaiduPanError) as context:
+            client._parse_share_page("https://pan.baidu.com/s/1example")
+
+        self.assertTrue(context.exception.share_invalid)
 
 
 class ApiItemParsingTests(unittest.TestCase):
