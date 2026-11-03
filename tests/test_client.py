@@ -328,6 +328,31 @@ class ShareDownloadTests(unittest.TestCase):
         # risk_retries = 8
         self.assertEqual(client._post.call_count, 8)
 
+    @patch("bdpan.client.time.sleep")
+    def test_risk_control_budget_is_shared_by_one_sync_client(self, _sleep) -> None:
+        client = BaiduPanClient(cookie="test-cookie")
+        client._download_share_id = 11564703787
+        client._download_share_uk = 1732808968
+        client._download_surl = "1example"
+        client.get_bdstoken = Mock(return_value="test-token")
+        client._get = Mock(return_value={
+            "errno": 0,
+            "data": {"sign": "test-sign", "timestamp": 1234567890},
+        })
+        client._post = Mock(return_value={
+            "errno": 0,
+            "list": "lcLSYqsqWZI7非JSON密文响应",
+        })
+
+        with self.assertRaises(BaiduPanError):
+            client.get_share_download_url(111)
+        self.assertEqual(client._post.call_count, 8)
+
+        client._post.reset_mock()
+        with self.assertRaises(BaiduPanError):
+            client.get_share_download_url(222)
+        self.assertEqual(client._post.call_count, 1)
+
     def test_json_list_decodes_json_string_and_rejects_garbage(self) -> None:
         self.assertEqual(
             BaiduPanClient._json_list('[{"a": 1}]', "sharedownload"),

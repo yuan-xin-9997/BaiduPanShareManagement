@@ -235,6 +235,7 @@ class BaiduPanClient:
         self._download_share_uk: int = 0
         self._download_sekey: str = ""
         self._download_surl: str = ""
+        self._risk_control_exhausted: bool = False
         self._suppress_warnings()
 
     @staticmethod
@@ -645,7 +646,9 @@ class BaiduPanClient:
         # （RISK 退避，上限 24h）：密文为间歇性抖动而非硬性封禁，较短退避能给下一次
         # 定时同步更多机会撞上恢复窗口，避免被历史失败计数累积压到 24h。
         # 重试 8 次最大等待约 21 分钟，覆盖大多数间歇性风控场景。
-        risk_retries = 8
+        # 同一次同步（同一个 client）里，如果已经确认风控未恢复，后续文件
+        # 只快速尝试 1 次，避免一个大文件把整批目录同步拖住数小时。
+        risk_retries = 1 if self._risk_control_exhausted else 8
         for attempt in range(risk_retries):
             config = self._get(
                 f"{BASE_URL}/share/tplconfig",
@@ -733,6 +736,7 @@ class BaiduPanClient:
                 )
                 raise BaiduPanError(-1, "百度未返回文件下载地址")
             return dlink
+        self._risk_control_exhausted = True
         raise BaiduPanError(-1, "sharedownload 风控响应未恢复，请稍后重试")
 
     def download_share_file(self, fs_id: int, destination: str) -> int:
