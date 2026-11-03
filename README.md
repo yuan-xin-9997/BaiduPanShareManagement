@@ -254,7 +254,7 @@ Cookie”，现有分享链接自动关联到它；重复启动不会创建重�
 - 在系统配置页添加 Cookie 时选择网盘类型：百度需要 `BDUSS`，夸克需要 `__puus`。Cookie 原文继续仅存于服务端 secrets.json；分享与凭据类型必须一致，已建分享不可直接切换网盘类型。
 - 添加分享时可直接粘贴 `https://pan.quark.cn/s/分享ID?pwd=提取码` 或带中文提取码的文本，选择同网盘凭据。
 - 夸克下载先将文件转存到所选账号的根目录，再获取下载地址。转存文件保留、占用网盘容量；再次同步更新文件可能产生额外转存。容量不足或接口拒绝时任务失败并保留错误日志。
-- 夸克 API 使用 Web 接口，可能随平台更新或风控失效。可通过环境变量 `QUARK_API_URL` 覆盖 API 基址（默认 `https://drive-pc.quark.cn/1/clouddrive`）。需要有效账号 Cookie；模拟接口测试不能代替真实账号验收。
+- 夸克分享令牌/目录接口使用 `drive-h.quark.cn`，账号转存、任务和下载使用 `drive-pc.quark.cn`；可分别用 `QUARK_SHARE_API_URL`（默认 `https://drive-h.quark.cn/1/clouddrive`）和 `QUARK_API_URL`（默认 `https://drive-pc.quark.cn/1/clouddrive`）覆盖。夸克对短时间大量转存有临时限制（约 10 分钟），同步会记录错误，稍后重试即可。需要有效账号 Cookie；模拟接口测试不能代替真实账号验收。
 - CLI 同样按分享类型分派客户端；例如 `bdpan config --provider quark --name 夸克账号 --cookie '完整Cookie'`，添加分享时可用 `--cookie-id` 指定凭据。
 - Jenkins 增量更新排除 `config/app.json`，仅首次部署复制默认配置，保留线上 data、日志与配置。升级前建议备份 SQLite、secrets.json 和配置文件。
 
