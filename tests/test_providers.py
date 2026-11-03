@@ -1,10 +1,11 @@
 import json
 import time
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from bdpan.client import BaiduPanError
 from bdpan.cookies import validate_cookie_value, redact_sensitive
 from bdpan.database import Database
 from bdpan.models import ShareLink, FileEntry
@@ -80,6 +81,54 @@ def test_quark_unescapes_html_entities_in_names_and_title(tmp_path):
     assert info.title == 'T&T'
     assert info.files[0].name == "A's.pdf"
     assert info.files[0].path == "/A's.pdf"
+    client.close()
+
+
+def test_quark_request_error_includes_code_and_message():
+    client = QuarkPanClient('__puus=secret')
+    response = Mock()
+    response.raise_for_status = Mock()
+    response.json = Mock(return_value={
+        'status': 200,
+        'code': 41030,
+        'message': '当前用户封禁转存功能受限',
+        'metadata': {'share_control': {'forbidden_to': 123}},
+    })
+    client.session.request = Mock(return_value=response)
+
+    with pytest.raises(BaiduPanError) as ctx:
+        client._request('POST', '/share/sharepage/save')
+
+    assert '41030' in str(ctx.value)
+    assert '封禁' in str(ctx.value)
+    assert ctx.value.quark_code == 41030
+    client.close()
+
+
+@patch('bdpan.quark.time.sleep')
+def test_quark_save_ban_waits_and_retries(_sleep, tmp_path):
+    client = QuarkPanClient('__puus=secret')
+    client.tokens['fid'] = ('token', 'parent')
+    ban = BaiduPanError(-1, 'ban')
+    ban.quark_code = 41030
+    ban.quark_metadata = {
+        'share_control': {'forbidden_to': int((time.time() + 30) * 1000)}
+    }
+    client._request = Mock(side_effect=[
+        ban,
+        {'task_id': 'task'},
+        {'save_as': {'save_as_top_fids': ['saved']}},
+        [{'download_url': 'https://download.example/a'}],
+    ])
+    response = Mock()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.iter_content.return_value = [b'hello']
+    client.session.get = Mock(return_value=response)
+
+    assert client.download_share_file('quark_fid', str(tmp_path / 'out')) == 5
+    assert (tmp_path / 'out').read_bytes() == b'hello'
+    _sleep.assert_called()
     client.close()
 
 

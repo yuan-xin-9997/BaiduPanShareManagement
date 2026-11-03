@@ -1,5 +1,6 @@
 """夸克 Web 接口适配：分享索引、转存后下载。"""
 import html
+import logging
 import os
 import posixpath
 import re
@@ -9,6 +10,8 @@ import requests
 
 from .client import BaiduPanError, ShareFile, ShareInfo
 from .providers import normalize_share
+
+logger = logging.getLogger(__name__)
 
 
 class QuarkPanClient:
@@ -38,11 +41,52 @@ class QuarkPanClient:
         except (requests.RequestException, ValueError) as exc:
             raise BaiduPanError(-1, "夸克网盘请求失败，请检查网络或重新登录") from exc
         if not isinstance(result, dict) or result.get("code", 0) != 0 or result.get("status", 200) != 200:
-            raise BaiduPanError(-1, "夸克网盘拒绝请求，请检查提取码、分享状态或 Cookie")
+            code = result.get("code") if isinstance(result, dict) else None
+            message = result.get("message") if isinstance(result, dict) else ""
+            metadata = result.get("metadata") if isinstance(result, dict) else {}
+            error = BaiduPanError(
+                -1,
+                f"夸克网盘拒绝请求（code={code}）：{message or '未知错误'}",
+            )
+            error.quark_code = code
+            error.quark_metadata = metadata if isinstance(metadata, dict) else {}
+            raise error
         data = result.get("data")
         if not isinstance(data, (dict, list)):
             raise BaiduPanError(-1, "夸克网盘响应格式异常")
         return data
+
+    @staticmethod
+    def _save_ban_wait_seconds(exc: BaiduPanError) -> float:
+        metadata = getattr(exc, "quark_metadata", {}) or {}
+        control = metadata.get("share_control", {}) if isinstance(metadata, dict) else {}
+        forbidden_to = control.get("forbidden_to") if isinstance(control, dict) else None
+        try:
+            wait = int(forbidden_to) / 1000 - time.time() + 5
+        except (TypeError, ValueError):
+            wait = 0
+        return max(0.0, min(wait, 900.0))
+
+    def _save_share_file(self, fid: str, token: str, parent: str) -> dict:
+        payload = {
+            "fid_list": [fid],
+            "fid_token_list": [token],
+            "pwd_id": self.pwd_id,
+            "stoken": self.stoken,
+            "pdir_fid": parent,
+            "to_pdir_fid": "0",
+            "scene": "link",
+        }
+        try:
+            return self._request("POST", "/share/sharepage/save", json=payload)
+        except BaiduPanError as exc:
+            if getattr(exc, "quark_code", None) != 41030:
+                raise
+            wait = self._save_ban_wait_seconds(exc)
+            logger.warning("夸克转存被临时限制，等待 %.0f 秒后重试", wait)
+            if wait:
+                time.sleep(wait)
+            return self._request("POST", "/share/sharepage/save", json=payload)
 
     def get_bdstoken(self):
         self._request("GET", "/file/sort", params={"pdir_fid": "0", "_page": 1, "_size": 1})
@@ -133,7 +177,7 @@ class QuarkPanClient:
         # 夸克只允许下载自己网盘的文件；转存保留在账号中，便于重试和人工核对。
         target = self.saved_fids.get(fid)
         if not target:
-            saved = self._request("POST", "/share/sharepage/save", json={"fid_list": [fid], "fid_token_list": [token], "pwd_id": self.pwd_id, "stoken": self.stoken, "pdir_fid": parent, "to_pdir_fid": "0", "scene": "link"})
+            saved = self._save_share_file(fid, token, parent)
             task_id = saved.get("task_id")
             if not task_id:
                 raise BaiduPanError(-1, "夸克未返回转存任务 ID")
