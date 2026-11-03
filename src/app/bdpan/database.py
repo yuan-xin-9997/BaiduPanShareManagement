@@ -556,6 +556,15 @@ class Database:
         )
         self.conn.commit()
 
+    def mark_sync_partial(self, mapping_id: int, synced_at: float) -> None:
+        """记录部分成功：更新最近同步时间，但保留失败退避状态。"""
+        self.conn.execute(
+            "UPDATE sync_mappings SET last_synced = ?, last_attempted = ? "
+            "WHERE id = ?",
+            (synced_at, synced_at, mapping_id),
+        )
+        self.conn.commit()
+
     def mark_sync_failure(
         self, mapping_id: int, attempted_at: float, retry_after: float,
     ) -> None:

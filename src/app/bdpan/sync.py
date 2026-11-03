@@ -209,6 +209,11 @@ class SyncManager:
             mapping.retry_after = 0
             mapping.consecutive_failures = 0
             self.db.mark_sync_success(mapping.id or 0, mapping.last_synced)
+        elif result.files_added or result.files_updated:
+            # 部分文件被百度拒绝时仍记录最近一次成功下载时间，避免页面显示“从未同步”。
+            mapping.last_synced = time.time()
+            mapping.last_attempted = mapping.last_synced
+            self.db.mark_sync_partial(mapping.id or 0, mapping.last_synced)
 
         logger.info(
             "同步完成 %s -> %s: %s",

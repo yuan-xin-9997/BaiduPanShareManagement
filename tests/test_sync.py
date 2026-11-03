@@ -173,6 +173,30 @@ class SyncPreviewSafetyTests(unittest.TestCase):
             self.assertEqual(result.files_added, ["allowed.pdf"])
             self.assertTrue(any("blocked.pdf" in item for item in result.errors))
             db.mark_sync_success.assert_not_called()
+            db.mark_sync_partial.assert_called_once()
+
+    def test_sync_does_not_mark_partial_when_all_files_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            def downloader(_fs_id: int, _destination: str) -> int:
+                raise RuntimeError("文件违规，无法下载")
+
+            entries = [
+                FileEntry(
+                    None, 1, index, f"blocked-{index}.pdf",
+                    f"/7大投行/高盛/blocked-{index}.pdf",
+                    False, 10, f"md5-{index}", 0, None,
+                )
+                for index in (1, 2)
+            ]
+            db = Mock()
+            result = SyncManager(db, downloader).sync_mapping(
+                self._mapping(tmp, "copy_new"), entries
+            )
+
+            self.assertEqual(result.files_added, [])
+            self.assertEqual(len(result.errors), 2)
+            db.mark_sync_success.assert_not_called()
+            db.mark_sync_partial.assert_not_called()
 
     def test_hashed_metadata_supports_max_length_utf8_names(self) -> None:
         names = [
