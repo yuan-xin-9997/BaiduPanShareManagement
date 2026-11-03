@@ -167,8 +167,13 @@ class SyncManager:
                     if not confirm_callback(f"新增文件: {rel}", [rel]):
                         result.files_skipped.append(rel)
                         continue
-                self._download_entry(local_file, entry)
-                result.files_added.append(rel)
+                try:
+                    self._download_entry(local_file, entry)
+                except Exception as exc:
+                    # 单个文件失败（如百度判定文件违规）不应中断整个目录的同步。
+                    result.errors.append(f"{rel}: {exc}")
+                else:
+                    result.files_added.append(rel)
             else:
                 # 已存在时优先用上次同步的远端版本元数据判断；没有元数据的
                 # 旧文件退回到大小判断，避免误覆盖用户原有文件。
@@ -177,8 +182,12 @@ class SyncManager:
                         if not confirm_callback(f"更新文件: {rel}", [rel]):
                             result.files_skipped.append(rel)
                             continue
-                    self._download_entry(local_file, entry)
-                    result.files_updated.append(rel)
+                    try:
+                        self._download_entry(local_file, entry)
+                    except Exception as exc:
+                        result.errors.append(f"{rel}: {exc}")
+                    else:
+                        result.files_updated.append(rel)
 
         # 镜像模式：删除本地多余文件
         if strat == SyncStrategy.MIRROR:

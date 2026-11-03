@@ -47,6 +47,14 @@ def probe_storage(raw_path: str, storage_type: str) -> dict[str, object]:
         return {"ok": False, "kind": storage_type, "message": str(exc)}
 
     path = Path(normalized)
+    existing = _nearest_existing(path)
+    if existing is not None and existing.is_dir():
+        # systemd/autofs 按需挂载点只有在读取目录时才会触发挂载；
+        # 仅 stat/access 时仍是挂载点下的空目录。重启后若不先触发，
+        # 服务账号会把 root 所有的挂载点目录误判为不可写。
+        _wake_lazy_mount(existing)
+        existing = _nearest_existing(path) or existing
+
     if storage_type == SMB_MOUNT:
         if os.name == "nt":
             if not (normalized.startswith("\\\\") or _windows_remote_drive(normalized)):
@@ -60,7 +68,6 @@ def probe_storage(raw_path: str, storage_type: str) -> dict[str, object]:
                     "message": "未检测到 SMB 挂载点；请先挂载 NAS，避免文件误写入系统盘",
                 }
 
-    existing = _nearest_existing(path)
     if existing is None:
         return {
             "ok": False, "kind": storage_type,
@@ -83,6 +90,19 @@ def ensure_storage_ready(raw_path: str, storage_type: str) -> None:
     if not result["ok"]:
         prefix = "SMB 存储不可用" if storage_type == SMB_MOUNT else "目标目录不可用"
         raise OSError(f"{prefix}：{result['message']}（{raw_path}）")
+
+
+def _wake_lazy_mount(path: Path) -> None:
+    """读取目录以触发 systemd/autofs 按需挂载。
+
+    ``exists()`` 和 ``os.access()`` 不会触发 autofs 挂载，只有目录读取或
+    子路径查找才会。挂载前挂载点是 root 所有的空目录，因此需要先读一次。
+    """
+    try:
+        with os.scandir(path) as entries:
+            next(entries, None)
+    except OSError:
+        return
 
 
 def _nearest_existing(path: Path) -> Path | None:

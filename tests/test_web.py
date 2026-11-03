@@ -107,6 +107,24 @@ def test_local_storage_probe_accepts_existing_writable_directory(tmp_path: Path)
     assert result["ok"] is True
 
 
+def test_storage_probe_reads_directory_to_trigger_lazy_mount(
+    tmp_path: Path, monkeypatch
+) -> None:
+    target = tmp_path / "nas"
+    target.mkdir()
+    scanned: list[str] = []
+    real_scandir = os.scandir
+
+    def recording_scandir(path):
+        scanned.append(str(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", recording_scandir)
+    result = probe_storage(str(target), "local")
+    assert result["ok"] is True
+    assert str(target) in scanned
+
+
 def test_windows_smb_path_accepts_unc_and_rejects_local_drive() -> None:
     if os.name != "nt":
         return

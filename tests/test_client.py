@@ -62,6 +62,24 @@ class BdstokenTests(unittest.TestCase):
             client._get_share_bdstoken()
 
 
+class DownloadUrlErrorTests(unittest.TestCase):
+    def test_download_url_error_includes_baidu_message(self) -> None:
+        client = BaiduPanClient(cookie="BDUSS=test")
+        client._download_share_id = 1
+        client._download_share_uk = 2
+        client._download_surl = "test-surl"
+        client._get_share_bdstoken = Mock(return_value="")
+        client._get = Mock(return_value={
+            "errno": 0, "data": {"sign": "sign", "timestamp": 1},
+        })
+        client._post = Mock(return_value={
+            "errno": -1, "show_msg": "文件违规，无法下载",
+        })
+
+        with self.assertRaisesRegex(BaiduPanError, "文件违规，无法下载"):
+            client.get_share_download_url(123)
+
+
 class VerifyPasswordTests(unittest.TestCase):
     def _client(self) -> BaiduPanClient:
         client = BaiduPanClient(cookie="test-cookie")

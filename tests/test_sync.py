@@ -146,6 +146,34 @@ class SyncPreviewSafetyTests(unittest.TestCase):
             downloader.assert_not_called()
             self.assertEqual(result.files_updated, [])
 
+    def test_sync_continues_when_one_file_cannot_be_downloaded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            def downloader(fs_id: int, destination: str) -> int:
+                if fs_id == 1:
+                    raise RuntimeError("文件违规，无法下载")
+                with open(destination, "wb") as output:
+                    output.write(b"real-data!")
+                return 10
+
+            blocked = FileEntry(
+                None, 1, 1, "blocked.pdf", "/7大投行/高盛/blocked.pdf",
+                False, 10, "md5-blocked", 0, None,
+            )
+            allowed = FileEntry(
+                None, 1, 2, "allowed.pdf", "/7大投行/高盛/allowed.pdf",
+                False, 10, "md5-allowed", 0, None,
+            )
+            db = Mock()
+            result = SyncManager(db, downloader).sync_mapping(
+                self._mapping(tmp, "copy_new"), [blocked, allowed]
+            )
+
+            self.assertTrue(Path(tmp, "allowed.pdf").is_file())
+            self.assertFalse(Path(tmp, "blocked.pdf").exists())
+            self.assertEqual(result.files_added, ["allowed.pdf"])
+            self.assertTrue(any("blocked.pdf" in item for item in result.errors))
+            db.mark_sync_success.assert_not_called()
+
     def test_hashed_metadata_supports_max_length_utf8_names(self) -> None:
         names = [
             "a" * 250 + ".pdf",

@@ -172,7 +172,8 @@ python run.py --config config/app.json
 - macOS：通过 Finder 连接 `smb://NAS地址/共享名`，再填写 `/Volumes/共享名/目录`。
 
 每次同步前都会验证挂载和写权限。Linux/macOS 挂载失效时同步会停止，避免文件误写
-到本机系统盘。
+到本机系统盘。使用 systemd automount（`x-systemd.automount`）的挂载点会在存储探测
+时自动读取目录以触发挂载，服务重启后无需手工先访问挂载点；NAS 离线时仍会中止同步。
 
 ## 同步策略
 

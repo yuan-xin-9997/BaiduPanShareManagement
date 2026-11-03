@@ -693,7 +693,11 @@ class BaiduPanClient:
             data = self._post(f"{BASE_URL}/api/sharedownload", params, payload)
             errno = data.get("errno", -1)
             if errno != 0:
-                raise BaiduPanError(errno, f"获取文件下载地址失败 (errno={errno})")
+                detail = str(data.get("show_msg") or "").strip()
+                suffix = f"：{detail}" if detail else ""
+                raise BaiduPanError(
+                    errno, f"获取文件下载地址失败 (errno={errno}){suffix}"
+                )
             lst = data.get("list", [])
             # 风控响应：list 为非数组的密文字符串。先尝试 JSON 二次解码（部分路径
             # 会返回 JSON 字符串），失败则视为风控密文，重试等待恢复。
