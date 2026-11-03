@@ -1,4 +1,5 @@
 """夸克 Web 接口适配：分享索引、转存后下载。"""
+import html
 import os
 import posixpath
 import re
@@ -94,10 +95,11 @@ class QuarkPanClient:
                 )
                 if not isinstance(data, dict) or not isinstance(data.get("list"), list):
                     raise BaiduPanError(-1, "夸克目录响应不完整，已停止索引")
-                title = title or data.get("share", {}).get("title", "")
+                title = title or html.unescape(data.get("share", {}).get("title", ""))
                 items = data["list"]
                 for item in items:
-                    fid, name = str(item["fid"]), str(item["file_name"])
+                    fid = str(item["fid"])
+                    name = html.unescape(str(item["file_name"]))
                     if not re.fullmatch(r"[A-Za-z0-9_-]+", fid):
                         raise BaiduPanError(-1, "夸克文件 ID 格式异常")
                     if not name or name in (".", "..") or "/" in name or "\\" in name:

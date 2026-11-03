@@ -63,6 +63,26 @@ def test_quark_share_endpoints_use_share_host_and_login_flag(tmp_path):
     client.close()
 
 
+def test_quark_unescapes_html_entities_in_names_and_title(tmp_path):
+    client = QuarkPanClient('__puus=secret')
+    client._request = Mock(side_effect=[
+        {'stoken': 's'},
+        {
+            'list': [{
+                'fid': '1', 'file_name': 'A&#39;s.pdf', 'dir': False,
+                'share_fid_token': 't', 'size': 1, 'updated_at': 0,
+            }],
+            'metadata': {'_total': 1},
+            'share': {'title': 'T&amp;T'},
+        },
+    ])
+    info = client.parse_share('https://pan.quark.cn/s/test?pwd=abcd')
+    assert info.title == 'T&T'
+    assert info.files[0].name == "A's.pdf"
+    assert info.files[0].path == "/A's.pdf"
+    client.close()
+
+
 def test_quark_recursive_pagination_and_download(tmp_path):
     client = QuarkPanClient('__puus=secret')
     root = [{'fid': str(i), 'file_name': f'{i}.txt', 'dir': False, 'share_fid_token': f't{i}'} for i in range(100)]

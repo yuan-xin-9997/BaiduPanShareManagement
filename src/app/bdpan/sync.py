@@ -444,6 +444,17 @@ class SyncManager:
             return False
 
         remote = cls._remote_fingerprint(entry)
+        remote_fs_id = str(remote.get("fs_id") or "")
+        local_fs_id = str(metadata.get("fs_id") or "")
+        remote_provider = "quark" if remote_fs_id.startswith("quark_") else "baidu"
+        local_provider = "quark" if local_fs_id.startswith("quark_") else "baidu"
+        if remote_provider != local_provider:
+            # 更换网盘后 fs_id 和 modified_time 必然变化，不能据此重下整目录；
+            # 大小已在上面校验，这里只比较内容 md5。
+            remote_md5 = str(remote.get("md5") or "")
+            local_md5 = str(metadata.get("md5") or "")
+            return bool(remote_md5 and local_md5 and remote_md5 != local_md5)
+
         for key in ("fs_id", "md5", "modified_time", "size"):
             if remote.get(key) and metadata.get(key) != remote.get(key):
                 return True

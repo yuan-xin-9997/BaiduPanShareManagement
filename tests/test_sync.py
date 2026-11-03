@@ -198,6 +198,32 @@ class SyncPreviewSafetyTests(unittest.TestCase):
             db.mark_sync_success.assert_not_called()
             db.mark_sync_partial.assert_not_called()
 
+    def test_provider_switch_skips_file_with_same_size_and_md5(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            local_file = Path(tmp, "report.pdf")
+            local_file.write_bytes(b"real-data!")
+            baidu = self._entry_with_version(100, "same-md5")
+            SyncManager._write_file_metadata(local_file, baidu)
+            quark = FileEntry(
+                None, 1, "quark_abc", "report.pdf",
+                "/7大投行/高盛/report.pdf", False, 10, "same-md5", 200, None,
+            )
+
+            self.assertFalse(SyncManager._needs_update(local_file, quark))
+
+    def test_provider_switch_updates_file_with_different_md5(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            local_file = Path(tmp, "report.pdf")
+            local_file.write_bytes(b"real-data!")
+            baidu = self._entry_with_version(100, "old-md5")
+            SyncManager._write_file_metadata(local_file, baidu)
+            quark = FileEntry(
+                None, 1, "quark_abc", "report.pdf",
+                "/7大投行/高盛/report.pdf", False, 10, "new-md5", 200, None,
+            )
+
+            self.assertTrue(SyncManager._needs_update(local_file, quark))
+
     def test_hashed_metadata_supports_max_length_utf8_names(self) -> None:
         names = [
             "a" * 250 + ".pdf",
