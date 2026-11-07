@@ -18,6 +18,12 @@ const syncedFiles = reactive({
   sortBy: 'synced_at', direction: 'desc', loading: false, error: '',
 })
 const settings = ref(null)
+const settingsForm = reactive({ app_name: '', log_retention_days: 30 })
+const taskSettingsModal = ref(false)
+const taskSettingsForm = reactive({ task_workers: 2, scheduler_poll_seconds: 15, sync_history_retention_days: 90, sync_history_max_runs_per_mapping: 200 })
+const passwordModal = ref(false)
+const passwordForm = reactive({ current_password: '', new_password: '', confirm_password: '' })
+const passwordError = ref('')
 const cookieModal = ref(false)
 const cookieForm = reactive({ id: null, name: '', cookie: '', provider: 'baidu' })
 const users = ref([])
@@ -30,8 +36,21 @@ const pageMeta = {
   shares: ['分享链接', '管理和浏览多网盘分享目录'],
   mappings: ['同步映射', '将远端目录安全同步到本机或 NAS'],
   tasks: ['任务中心', '查看实时任务与历史同步日志'],
-  settings: ['系统配置', '查看运行配置并维护多网盘凭据'],
+  settings: ['系统配置', '维护系统设置、账号密码与多网盘凭据'],
   users: ['权限管理', '维护用户角色与可访问页面'],
+}
+const configLabels = {
+  app_name: '系统名称',
+  host: '监听地址',
+  port: '监听端口',
+  timezone: '时区',
+  database_path: '数据库路径',
+  log_file: '日志文件',
+  log_retention_days: '日志保留天数',
+  task_workers: '任务并发数',
+  scheduler_poll_seconds: '调度轮询间隔（秒）',
+  sync_history_retention_days: '同步历史保留天数',
+  sync_history_max_runs_per_mapping: '每个映射最多保留运行数',
 }
 const navItems = computed(() => [
   ['shares', '链', '分享链接'], ['mappings', '映', '同步映射'],
@@ -92,10 +111,12 @@ function formatSize(value) {
 }
 async function boot() {
   bootstrap.value = await api('/api/bootstrap')
+  if (bootstrap.value.app_name) document.title = bootstrap.value.app_name
   if (bootstrap.value.authenticated) {
     user.value = bootstrap.value.user
     activeView.value = user.value.pages[0] || 'shares'
     await refresh()
+    await loadViewData(activeView.value)
   }
 }
 async function login() {
@@ -106,6 +127,7 @@ async function login() {
     activeView.value = user.value.pages[0] || 'shares'
     loginForm.password = ''
     await refresh()
+    await loadViewData(activeView.value)
   } catch (error) { loginError.value = error.message }
 }
 async function logout() { await api('/api/logout', { method: 'POST' }); user.value = null }
@@ -117,8 +139,83 @@ async function refresh() {
 }
 async function switchView(view) {
   activeView.value = view
-  if (view === 'settings') settings.value = await api('/api/settings')
+  await loadViewData(view)
+}
+async function loadViewData(view) {
+  if (view === 'settings') await loadSettings()
   if (view === 'users') users.value = await api('/api/users')
+}
+async function loadSettings() {
+  settings.value = await api('/api/settings')
+  Object.assign(settingsForm, {
+    app_name: settings.value.config.editable.app_name,
+    log_retention_days: settings.value.config.editable.log_retention_days,
+  })
+}
+async function saveSettings() {
+  try {
+    const result = await api('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        app_name: settingsForm.app_name,
+        log_retention_days: Number(settingsForm.log_retention_days),
+      }),
+    })
+    await loadSettings()
+    document.title = settingsForm.app_name
+    showToast(result.restart_required?.length ? '设置已保存，部分项目需重启服务后生效' : '系统设置已保存')
+  } catch (error) { showToast(error.message) }
+}
+async function openTaskSettings() {
+  try {
+    const data = await api('/api/settings')
+    const editable = data.config.editable
+    Object.assign(taskSettingsForm, {
+      task_workers: editable.task_workers,
+      scheduler_poll_seconds: editable.scheduler_poll_seconds,
+      sync_history_retention_days: editable.sync_history_retention_days,
+      sync_history_max_runs_per_mapping: editable.sync_history_max_runs_per_mapping,
+    })
+    taskSettingsModal.value = true
+  } catch (error) { showToast(error.message) }
+}
+async function saveTaskSettings() {
+  try {
+    const result = await api('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        task_workers: Number(taskSettingsForm.task_workers),
+        scheduler_poll_seconds: Number(taskSettingsForm.scheduler_poll_seconds),
+        sync_history_retention_days: Number(taskSettingsForm.sync_history_retention_days),
+        sync_history_max_runs_per_mapping: Number(taskSettingsForm.sync_history_max_runs_per_mapping),
+      }),
+    })
+    taskSettingsModal.value = false
+    showToast(result.restart_required?.length ? '任务设置已保存，任务并发数需重启服务后生效' : '任务设置已保存')
+  } catch (error) { showToast(error.message) }
+}
+function openPassword() {
+  Object.assign(passwordForm, { current_password: '', new_password: '', confirm_password: '' })
+  passwordError.value = ''
+  passwordModal.value = true
+}
+async function savePassword() {
+  passwordError.value = ''
+  if (passwordForm.new_password !== passwordForm.confirm_password) {
+    passwordError.value = '两次输入的新密码不一致'
+    return
+  }
+  try {
+    await api('/api/account/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        current_password: passwordForm.current_password,
+        new_password: passwordForm.new_password,
+      }),
+    })
+    passwordModal.value = false
+    showToast('密码已更新')
+  } catch (error) { passwordError.value = error.message }
 }
 
 function openShare(link = null) {
@@ -198,7 +295,7 @@ function sortMark(field) {
 }
 
 function openCookie(item = null) { Object.assign(cookieForm, { id: item?.id ?? null, name: item?.name || '', cookie: '', provider: item?.provider || 'baidu' }); cookieModal.value = true }
-async function reloadSettings() { settings.value = await api('/api/settings'); await refresh() }
+async function reloadSettings() { await loadSettings(); await refresh() }
 async function saveCookie() {
   try {
     const body = { name: cookieForm.name, provider: cookieForm.provider }; if (cookieForm.cookie) body.cookie = cookieForm.cookie
@@ -225,14 +322,14 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
   <div v-if="bootstrap === null" class="loading">正在启动管理服务…</div>
   <main v-else-if="!user" class="login-shell">
     <section class="login-brand"><div class="brand-mark">盘</div><p class="eyebrow">PRIVATE FILE OPERATIONS</p><h1>让分享链接<br><span>真正落地。</span></h1><p>统一索引百度、夸克网盘分享目录，按计划同步到本机或 NAS。</p><div class="login-points"><span>目录索引</span><span>安全同步</span><span>权限隔离</span></div></section>
-    <form class="login-card" @submit.prevent="login"><div><p class="eyebrow">WELCOME BACK</p><h2>登录管理中心</h2><p>账号由系统管理员在 password.txt 或权限页面维护。</p></div><label>用户名<input v-model.trim="loginForm.username" autocomplete="username" autofocus required placeholder="请输入用户名"></label><label>密码<input v-model="loginForm.password" type="password" autocomplete="current-password" required placeholder="请输入密码"></label><p v-if="loginError" class="error">{{ loginError }}</p><button class="primary wide">进入系统</button><small>默认部署账号请在首次登录后立即修改</small></form>
+    <form class="login-card" @submit.prevent="login"><div><p class="eyebrow">WELCOME BACK</p><h2>登录管理中心</h2><p>账号与密码由管理员在权限管理页面维护。</p></div><label>用户名<input v-model.trim="loginForm.username" autocomplete="username" autofocus required placeholder="请输入用户名"></label><label>密码<input v-model="loginForm.password" type="password" autocomplete="current-password" required placeholder="请输入密码"></label><p v-if="loginError" class="error">{{ loginError }}</p><button class="primary wide">进入系统</button><small>首次部署请使用默认账号登录，并立即修改密码</small></form>
   </main>
 
   <div v-else class="app-shell">
     <aside>
       <div class="logo"><div class="brand-mark small">盘</div><div><strong>多网盘</strong><small>分享管理</small></div></div>
       <nav><button v-for="item in navItems" :key="item[0]" :class="{ active: activeView === item[0] }" @click="switchView(item[0])"><span>{{ item[1] }}</span>{{ item[2] }}</button></nav>
-      <div class="account"><div class="avatar">{{ user.username.slice(0, 1).toUpperCase() }}</div><div><strong>{{ user.username }}</strong><small>{{ user.role === 'admin' ? '管理员' : '普通用户' }}</small></div><button title="退出" @click="logout">↗</button></div>
+      <div class="account"><div class="avatar">{{ user.username.slice(0, 1).toUpperCase() }}</div><div><strong>{{ user.username }}</strong><small>{{ user.role === 'admin' ? '管理员' : '普通用户' }}</small></div><button title="修改密码" @click="openPassword">密</button><button title="退出" @click="logout">↗</button></div>
     </aside>
     <section class="workspace">
       <header><div><p class="eyebrow">BAIDU PAN CONTROL</p><h1>{{ currentTitle[0] }}</h1><p>{{ currentTitle[1] }}</p></div><div class="header-status"><i></i>服务运行中</div></header>
@@ -247,6 +344,7 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
       <section v-if="activeView === 'mappings'" class="content"><div class="toolbar"><div class="stats"><strong>{{ state.mappings.length }}</strong><span>条同步映射</span></div><div class="button-row"><button @click="syncAll">同步全部</button><button class="primary" @click="openMapping()">＋ 新建映射</button></div></div><div v-if="!state.mappings.length" class="empty"><b>还没有同步映射</b><span>关联远端目录与本机或 NAS 目录。</span></div><div class="item-list"><article v-for="mapping in state.mappings" :key="mapping.id" class="item-card mapping"><div class="file-icon">映</div><div class="grow"><div class="item-title"><h3>{{ state.links.find(item => item.id === mapping.share_link_id)?.title || '未知分享' }}</h3><span class="pill">{{ mapping.storage_type === 'smb_mount' ? 'NAS · SMB' : '本机目录' }}</span></div><div class="route"><span>{{ mapping.remote_path }}</span><b>→</b><span>{{ mapping.local_path }}</span></div><div class="meta"><span>{{ mapping.sync_strategy }}</span><span>{{ mapping.auto_sync ? `每 ${mapping.schedule_interval} 分钟自动同步` : '手动同步' }}</span><span>上次：{{ formatTime(mapping.last_synced) }}</span></div></div><div class="actions"><button @click="openSyncedFiles('mapping', mapping.id, `映射 #${mapping.id} 的同步文件`)">查看</button><button @click="probeStorage(mapping)">检测</button><button class="accent" @click="syncOne(mapping.id)">同步</button><button @click="openMapping(mapping)">编辑</button><button class="danger" @click="deleteMapping(mapping.id)">删除</button></div></article></div></section>
 
       <section v-if="activeView === 'tasks'" class="content">
+        <div class="toolbar"><div class="muted">自动同步调度与历史保留策略由管理员在此维护。</div><button v-if="user.role === 'admin'" @click="openTaskSettings">任务设置</button></div>
         <div class="two-columns">
           <div class="panel">
             <div class="panel-head"><h2>当前任务</h2><span>{{ state.tasks.length }}</span></div>
@@ -275,7 +373,7 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
         </div>
       </section>
 
-      <section v-if="activeView === 'settings'" class="content"><div class="settings-grid"><div class="panel"><div class="panel-head"><h2>运行配置</h2><span>只读</span></div><dl v-if="settings"><template v-for="(value, key) in settings.config" :key="key"><dt>{{ key }}</dt><dd>{{ value }}</dd></template></dl></div><div class="panel cookie-panel"><div class="panel-head"><div><h2>多网盘凭据</h2><p class="muted">原文仅保存在服务端，不会返回浏览器。</p></div><button v-if="user.role === 'admin'" class="primary" @click="openCookie()">＋ 添加 Cookie</button></div><div v-if="!settings?.cookies?.length" class="empty compact">尚未配置 Cookie</div><article v-for="item in settings?.cookies || []" :key="item.id" class="cookie-row"><div class="grow"><div class="item-title"><h3>{{ item.name }}</h3><span :class="['pill', item.status]">{{ cookieStatus(item.status) }}</span><span v-if="item.readonly" class="pill">只读</span></div><p>{{ item.provider === "quark" ? "夸克网盘" : "百度网盘" }} · {{ item.masked_value }}</p><div class="meta"><span>添加：{{ formatTime(item.created_at) }}</span><span>校验：{{ formatTime(item.last_validated_at) }}</span></div><p v-if="item.last_validation_error" class="error">{{ item.last_validation_error }}</p></div><div v-if="user.role === 'admin' && !item.readonly" class="actions"><button @click="validateCookie(item.id)">校验</button><button @click="openCookie(item)">编辑</button><button class="danger" @click="deleteCookie(item.id)">删除</button></div></article></div></div></section>
+      <section v-if="activeView === 'settings'" class="content"><div class="settings-grid"><div class="panel"><div class="panel-head"><div><h2>基础设置</h2><p class="muted">保存后写入 config/app.json，并立即生效。</p></div><span>{{ user.role === 'admin' ? '可编辑' : '只读' }}</span></div><form @submit.prevent="saveSettings"><label>系统名称<input v-model.trim="settingsForm.app_name" :disabled="user.role !== 'admin'" required maxlength="60"></label><label>日志保留天数<input v-model.number="settingsForm.log_retention_days" type="number" min="1" max="3650" :disabled="user.role !== 'admin'"></label><div v-if="user.role === 'admin'" class="modal-actions"><button class="primary">保存设置</button></div></form></div><div class="panel"><div class="panel-head"><h2>部署信息</h2><span>只读</span></div><dl v-if="settings"><template v-for="(value, key) in settings.config.readonly" :key="key"><dt>{{ configLabels[key] || key }}</dt><dd>{{ value }}</dd></template></dl><p class="muted">监听地址、端口、时区和文件路径需修改 config/app.json 后重启服务。</p></div><div class="panel"><div class="panel-head"><div><h2>账号安全</h2><p class="muted">密码仅以 scrypt 哈希保存在 SQLite，不写入任何文件。</p></div><span>{{ user.username }}</span></div><p class="muted">管理员可在“权限管理”页面新增用户或重置其他用户密码。</p><div class="modal-actions"><button @click="openPassword">修改我的密码</button></div></div><div class="panel cookie-panel"><div class="panel-head"><div><h2>多网盘凭据</h2><p class="muted">原文仅保存在服务端，不会返回浏览器。</p></div><button v-if="user.role === 'admin'" class="primary" @click="openCookie()">＋ 添加 Cookie</button></div><div v-if="!settings?.cookies?.length" class="empty compact">尚未配置 Cookie</div><article v-for="item in settings?.cookies || []" :key="item.id" class="cookie-row"><div class="grow"><div class="item-title"><h3>{{ item.name }}</h3><span :class="['pill', item.status]">{{ cookieStatus(item.status) }}</span><span v-if="item.readonly" class="pill">只读</span></div><p>{{ item.provider === "quark" ? "夸克网盘" : "百度网盘" }} · {{ item.masked_value }}</p><div class="meta"><span>添加：{{ formatTime(item.created_at) }}</span><span>校验：{{ formatTime(item.last_validated_at) }}</span></div><p v-if="item.last_validation_error" class="error">{{ item.last_validation_error }}</p></div><div v-if="user.role === 'admin' && !item.readonly" class="actions"><button @click="validateCookie(item.id)">校验</button><button @click="openCookie(item)">编辑</button><button class="danger" @click="deleteCookie(item.id)">删除</button></div></article></div></div></section>
 
       <section v-if="activeView === 'users'" class="content"><div class="toolbar"><div class="stats"><strong>{{ users.length }}</strong><span>个系统用户</span></div><button class="primary" @click="openUser()">＋ 添加用户</button></div><div class="panel"><table><thead><tr><th>用户</th><th>角色</th><th>可访问页面</th><th>更新时间</th><th></th></tr></thead><tbody><tr v-for="account in users" :key="account.id"><td><strong>{{ account.username }}</strong></td><td><span class="pill">{{ account.role === 'admin' ? '管理员' : '普通用户' }}</span></td><td><div class="tags"><span v-for="page in account.pages" :key="page">{{ pageMeta[page]?.[0] }}</span></div></td><td>{{ formatTime(account.updated_at) }}</td><td><div class="actions"><button @click="openUser(account)">编辑</button><button class="danger" :disabled="account.id === user.id" @click="deleteUser(account.id)">删除</button></div></td></tr></tbody></table></div></section>
     </section>
@@ -311,6 +409,8 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
       </section>
     </div>
     <div v-if="userModal" class="modal" @click.self="userModal = false"><form class="modal-card" @submit.prevent="saveUser"><div class="modal-head"><div><p class="eyebrow">ACCESS CONTROL</p><h2>{{ userForm.id ? '编辑用户' : '添加用户' }}</h2></div><button type="button" @click="userModal = false">×</button></div><label>用户名<input v-model.trim="userForm.username" :disabled="Boolean(userForm.id)" required></label><label>密码<input v-model="userForm.password" type="password" :required="!userForm.id" :placeholder="userForm.id ? '留空表示不修改' : '至少 8 个字符'"></label><label>角色<select v-model="userForm.role"><option value="user">普通用户</option><option value="admin">管理员</option></select></label><fieldset :disabled="userForm.role === 'admin'"><legend>可访问页面</legend><label v-for="page in ['shares','mappings','tasks','settings']" :key="page" class="check"><input type="checkbox" :checked="userForm.pages.includes(page)" @change="togglePage(page)">{{ pageMeta[page][0] }}</label></fieldset><div class="modal-actions"><button type="button" @click="userModal = false">取消</button><button class="primary">保存用户</button></div></form></div>
+    <div v-if="taskSettingsModal" class="modal" @click.self="taskSettingsModal = false"><form class="modal-card" @submit.prevent="saveTaskSettings"><div class="modal-head"><div><p class="eyebrow">TASK SETTINGS</p><h2>任务与历史设置</h2></div><button type="button" @click="taskSettingsModal = false">×</button></div><label>任务并发数<input v-model.number="taskSettingsForm.task_workers" type="number" min="1" max="32" required></label><p class="muted">任务并发数修改后需重启服务生效。</p><label>调度轮询间隔（秒）<input v-model.number="taskSettingsForm.scheduler_poll_seconds" type="number" min="5" max="3600" required></label><label>同步历史保留天数<input v-model.number="taskSettingsForm.sync_history_retention_days" type="number" min="1" max="3650" required></label><label>每个映射最多保留运行数<input v-model.number="taskSettingsForm.sync_history_max_runs_per_mapping" type="number" min="10" max="100000" required></label><p class="muted">设置写入 config/app.json；调度间隔和历史保留策略保存后生效。</p><div class="modal-actions"><button type="button" @click="taskSettingsModal = false">取消</button><button class="primary">保存设置</button></div></form></div>
+    <div v-if="passwordModal" class="modal" @click.self="passwordModal = false"><form class="modal-card" @submit.prevent="savePassword"><div class="modal-head"><div><p class="eyebrow">ACCOUNT SECURITY</p><h2>修改登录密码</h2></div><button type="button" @click="passwordModal = false">×</button></div><label>当前密码<input v-model="passwordForm.current_password" type="password" autocomplete="current-password" required></label><label>新密码<input v-model="passwordForm.new_password" type="password" autocomplete="new-password" minlength="8" required placeholder="至少 8 个字符"></label><label>确认新密码<input v-model="passwordForm.confirm_password" type="password" autocomplete="new-password" minlength="8" required></label><p v-if="passwordError" class="error">{{ passwordError }}</p><p class="muted">密码仅以 scrypt 哈希保存在 SQLite，不会写入配置文件。</p><div class="modal-actions"><button type="button" @click="passwordModal = false">取消</button><button class="primary">更新密码</button></div></form></div>
     <transition name="toast"><div v-if="toastText" class="toast">{{ toastText }}</div></transition>
   </div>
 </template>

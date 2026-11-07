@@ -10,8 +10,8 @@ Windows、Linux、macOS 挂载的 SMB NAS。
 |---|---|
 | 分享链接 | 添加、编辑、删除、刷新分享链接，显示有效/已失效/待检测状态，逐级浏览远端目录 |
 | 同步映射 | 关联远端目录与本机/SMB 目录，检测连接、执行同步并查看已同步文件 |
-| 任务中心 | 当前任务仅显示排队或运行中的任务；同步历史可查看每次同步的文件、时间和耗时 |
-| 系统配置 | 查看脱敏运行配置，维护、校验多条百度网盘 Cookie |
+| 任务中心 | 当前任务仅显示排队或运行中的任务；同步历史可查看每次同步的文件、时间和耗时；管理员可维护自动调度与历史保留策略 |
+| 系统配置 | 维护系统名称、日志保留、当前账号密码和多网盘 Cookie，查看只读部署信息 |
 | 权限管理 | 管理用户密码、管理员/普通用户角色及可访问页面 |
 
 ## 目录结构
@@ -21,8 +21,7 @@ src/app/bdpan/          Python 后端与构建后的前端资源
 src/app/frontend/       Vue 3 + Vite 前端源码
 src/app/frontend/public/  浏览器标签页图标等静态资源，构建时拷贝到 web_static
 config/app.json         系统主配置
-data/app.sqlite3        SQLite 数据库（首次运行生成）
-data/password.txt       登录用户来源
+data/app.sqlite3        SQLite 数据库（用户密码哈希与业务数据，首次运行生成）
 data/secrets.json       Cookie 与会话密钥（首次运行生成，不提交 Git）
 logs/                   应用日志、进程输出和 PID
 src/JenkinsConfig/      Jenkins 流水线
@@ -58,42 +57,49 @@ npm run build
 
 ## 登录与权限
 
-用户维护在 `data/password.txt`：
-
-```text
-username:password:role
-```
-
-`role` 只能是 `admin` 或 `user`。首次部署默认账号为：
+用户与密码保存在 SQLite 的 `users` 表中，密码使用带随机盐的 scrypt 哈希，系统不再
+从文件读取或写入明文密码。首次部署或数据库中没有任何用户时，系统会自动创建默认
+管理员：
 
 ```text
 admin / admin123
 ```
 
-首次登录后应立即在“权限管理”页面修改默认密码。管理员拥有全部页面权限；普通用户
-可由管理员配置分享链接、同步映射、任务中心和系统配置页面权限。修改
-`password.txt` 后，下次登录会自动同步到数据库。
+首次登录后应立即通过左下角“密”按钮或“系统配置 → 账号安全”修改默认密码。管理员可在
+“权限管理”页面新增用户、重置密码、配置管理员/普通用户角色和可访问页面。管理员拥有
+全部页面权限；普通用户可由管理员配置分享链接、同步映射、任务中心和系统配置页面权限。
+
+升级时若存在旧版 `data/password.txt`，系统会一次性导入数据库中尚不存在的用户，
+导入成功后删除该明文文件；数据库中已有的用户不会被旧文件覆盖。之后账号和密码只
+通过界面维护。
 
 ## 配置文件
 
 系统配置位于 `config/app.json`：
 
-| 配置项 | 说明 |
-|---|---|
-| `host` / `port` | Web 监听地址与端口 |
-| `timezone` | 页面和日志时区，默认 `Asia/Shanghai` |
-| `database_path` | SQLite 数据库路径 |
-| `password_file` | 用户文件路径 |
-| `secret_file` | 百度 Cookie 和会话密钥文件 |
-| `log_file` | 应用日志路径 |
-| `log_retention_days` | 每日日志保留天数 |
-| `task_workers` | 后台任务并发数 |
-| `scheduler_poll_seconds` | 自动同步调度检查间隔 |
-| `sync_history_retention_days` | 已完成同步历史保留天数，默认 90 |
-| `sync_history_max_runs_per_mapping` | 每个映射最多保留的同步运行数，默认 200 |
+| 配置项 | 说明 | 页面维护 |
+|---|---|---|
+| `app_name` | 系统名称 | 系统配置 → 基础设置 |
+| `log_retention_days` | 每日日志保留天数 | 系统配置 → 基础设置 |
+| `task_workers` | 后台任务并发数（重启服务后生效） | 任务中心 → 任务设置 |
+| `scheduler_poll_seconds` | 自动同步调度检查间隔 | 任务中心 → 任务设置 |
+| `sync_history_retention_days` | 已完成同步历史保留天数，默认 90 | 任务中心 → 任务设置 |
+| `sync_history_max_runs_per_mapping` | 每个映射最多保留的同步运行数，默认 200 | 任务中心 → 任务设置 |
+| `host` / `port` | Web 监听地址与端口 | 只读，修改文件后重启 |
+| `timezone` | 页面和日志时区，默认 `Asia/Shanghai` | 只读，修改文件后重启 |
+| `database_path` | SQLite 数据库路径 | 只读，修改文件后重启 |
+| `secret_file` | Cookie 和会话密钥文件 | 只读，修改文件后重启 |
+| `log_file` | 应用日志路径 | 只读，修改文件后重启 |
+
+页面中可维护的配置项保存时会原子写回 `config/app.json`，不需要手工编辑文件。
+`task_workers` 需要重启服务才能改变实际线程池大小；调度间隔、历史保留策略和日志
+保留天数保存后生效。`host`、`port`、`timezone` 和文件路径属于部署参数，需修改配置
+文件并重启服务。
 
 环境变量 `BDPAN_CONFIG` 可指向其他配置文件。`BDPAN_COOKIE` 可提供一条只读兼容
-Cookie，页面不会把环境变量秘密复制到磁盘。敏感信息不写入 `app.json`。
+Cookie，页面不会把环境变量秘密复制到磁盘。`BDPAN_ADMIN_USERNAME` 和
+`BDPAN_ADMIN_PASSWORD` 可覆盖首次初始化默认管理员凭据（仅数据库没有用户时使用）。
+敏感信息不写入 `app.json`。
 
 ## 配置百度网盘 Cookie
 
@@ -232,8 +238,8 @@ bdpan sync-all
 - Web“任务中心”：当前任务查看排队/运行状态；同步历史查看结果、错误和本次同步文件。
 - `status.ps1` / `status.sh`：检查进程和 HTTP 健康状态。
 
-部署更新时保留整个 `data` 目录，尤其是 `password.txt`、`secrets.json` 和
-`app.sqlite3`。Jenkins 默认部署到 `/opt/BaiduPanShareManagement`，通过工作区同步
+部署更新时保留整个 `data` 目录，尤其是 `app.sqlite3`、`secrets.json` 和
+`config/app.json`。Jenkins 默认部署到 `/opt/BaiduPanShareManagement`，通过工作区同步
 代码并保留 `data` 与 `logs`。该目录首次部署时需要由管理员创建并授权给 Jenkins。
 Jenkinsfile 位于
 `src/JenkinsConfig/Jenkinsfile`。
@@ -267,3 +273,11 @@ Cookie”，现有分享链接自动关联到它；重复启动不会创建重�
 - Jenkins 增量更新排除 `config/app.json`，仅首次部署复制默认配置，保留线上 data、日志与配置。升级前建议备份 SQLite、secrets.json 和配置文件。
 
 Linux 运维脚本会优先管理已安装的 systemd 单元（环境变量 `BDPAN_SYSTEMD_UNIT`，默认 `baidupan.service`），否则使用原 PID 模式。Jenkins 用户需获准以 sudo 无密码执行对应单元的 start/stop；本次部署已添加仅限该单元启停的规则。
+
+## 账号与配置界面维护（2026-11-07）
+
+- 账号密码仅保存在 SQLite，新增、重置和修改密码均通过界面完成。
+- 系统配置页可维护系统名称、日志保留天数和当前账号密码；任务中心可维护任务并发数、
+  自动同步调度间隔及同步历史保留策略。
+- 页面维护的配置写回 `config/app.json`，Jenkins 部署不会覆盖已有配置文件。
+- 旧版 `data/password.txt` 只会用于一次性迁移，导入后自动删除。

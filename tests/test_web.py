@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sqlite3
 import os
 
@@ -9,9 +10,10 @@ from bdpan.database import Database
 from bdpan.storage import SMB_MOUNT, probe_storage, validate_storage_path
 
 
-def test_password_file_login_and_protected_state(tmp_path: Path) -> None:
+def test_default_admin_login_and_protected_state(tmp_path: Path) -> None:
     app = create_app(tmp_path)
     with TestClient(app) as client:
+        assert not (tmp_path / "password.txt").exists()
         assert client.get("/api/bootstrap").json()["authenticated"] is False
         response = client.post("/api/login", json={
             "username": "admin", "password": "admin123",
@@ -27,6 +29,113 @@ def test_password_file_login_and_protected_state(tmp_path: Path) -> None:
         assert client.post("/api/login", json={
             "username": "admin", "password": "admin123",
         }).status_code == 200
+        assert not (tmp_path / "password.txt").exists()
+
+
+def test_legacy_password_file_is_imported_and_removed(tmp_path: Path) -> None:
+    (tmp_path / "password.txt").write_text(
+        "# legacy\nlegacy:legacy123:user\n", encoding="utf-8"
+    )
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        assert client.post("/api/login", json={
+            "username": "legacy", "password": "legacy123",
+        }).status_code == 200
+        client.post("/api/logout")
+        # 旧文件没有管理员时，启动会补建默认管理员。
+        assert client.post("/api/login", json={
+            "username": "admin", "password": "admin123",
+        }).status_code == 200
+    assert not (tmp_path / "password.txt").exists()
+
+
+def test_users_persist_in_database_without_password_file(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        client.post("/api/login", json={
+            "username": "admin", "password": "admin123",
+        })
+        assert client.post("/api/users", json={
+            "username": "persisted", "password": "persisted123",
+            "role": "user", "pages": ["shares"],
+        }).status_code == 200
+    assert not (tmp_path / "password.txt").exists()
+
+    restarted = create_app(tmp_path)
+    with TestClient(restarted) as client:
+        assert client.post("/api/login", json={
+            "username": "persisted", "password": "persisted123",
+        }).status_code == 200
+
+
+def test_account_password_change(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        client.post("/api/login", json={
+            "username": "admin", "password": "admin123",
+        })
+        assert client.post("/api/account/password", json={
+            "current_password": "wrong-pass", "new_password": "newpass123",
+        }).status_code == 400
+        assert client.post("/api/account/password", json={
+            "current_password": "admin123", "new_password": "short",
+        }).status_code == 400
+        assert client.post("/api/account/password", json={
+            "current_password": "admin123", "new_password": "newpass123",
+        }).status_code == 200
+        client.post("/api/logout")
+        assert client.post("/api/login", json={
+            "username": "admin", "password": "admin123",
+        }).status_code == 401
+        assert client.post("/api/login", json={
+            "username": "admin", "password": "newpass123",
+        }).status_code == 200
+
+
+def test_admin_can_update_runtime_settings(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        client.post("/api/login", json={
+            "username": "admin", "password": "admin123",
+        })
+        response = client.put("/api/settings", json={
+            "app_name": "测试分享管理",
+            "log_retention_days": 7,
+            "task_workers": 4,
+            "scheduler_poll_seconds": 30,
+            "sync_history_retention_days": 30,
+            "sync_history_max_runs_per_mapping": 100,
+        })
+        assert response.status_code == 200
+        assert response.json()["restart_required"] == ["task_workers"]
+        payload = client.get("/api/settings").json()["config"]
+        assert payload["editable"]["app_name"] == "测试分享管理"
+        assert payload["editable"]["log_retention_days"] == 7
+        assert payload["editable"]["task_workers"] == 4
+        saved = json.loads((tmp_path / "app.json").read_text(encoding="utf-8"))
+        assert saved["app_name"] == "测试分享管理"
+        assert saved["sync_history_retention_days"] == 30
+        assert app.title == "测试分享管理"
+        assert app.state.tasks.scheduler_poll_seconds == 30
+        assert app.state.tasks.history_retention_days == 30
+        assert app.state.tasks.history_max_runs_per_mapping == 100
+
+
+def test_invalid_settings_are_rejected(tmp_path: Path) -> None:
+    app = create_app(tmp_path)
+    with TestClient(app) as client:
+        client.post("/api/login", json={
+            "username": "admin", "password": "admin123",
+        })
+        assert client.put("/api/settings", json={
+            "scheduler_poll_seconds": 1,
+        }).status_code == 400
+        assert client.put("/api/settings", json={
+            "app_name": "   ",
+        }).status_code == 400
+        assert client.put("/api/settings", json={
+            "host": "0.0.0.0",
+        }).status_code == 400
 
 
 def test_favicon_served_for_browser_tab(tmp_path: Path) -> None:
@@ -73,6 +182,7 @@ def test_regular_user_is_limited_by_page_permissions(tmp_path: Path) -> None:
         }).status_code == 200
         assert client.get("/api/state").status_code == 200
         assert client.get("/api/settings").status_code == 403
+        assert client.put("/api/settings", json={"app_name": "x"}).status_code == 403
         assert client.get("/api/users").status_code == 403
         assert client.post("/api/mappings", json={}).status_code == 403
 

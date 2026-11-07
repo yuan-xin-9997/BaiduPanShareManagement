@@ -219,7 +219,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Runtime data files (keep the data directory and password.txt tracked)
+# Runtime data files (keep the data directory tracked)
 data/app.sqlite3
 data/app.sqlite3-*
 data/secrets.json
+data/password.txt

@@ -4,7 +4,6 @@
   "port": 29080,
   "timezone": "Asia/Shanghai",
   "database_path": "data/app.sqlite3",
-  "password_file": "data/password.txt",
   "secret_file": "data/secrets.json",
   "log_file": "logs/app.log",
   "log_retention_days": 30,

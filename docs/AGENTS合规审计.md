@@ -9,7 +9,7 @@
 
 - Python + FastAPI 后端、Vue 3 + Vite 前端、SQLite 数据库。
 - 代码迁移到 `src/app`，建立 `config`、`data`、`logs`、`JenkinsConfig`。
-- 用户由 `data/password.txt` 维护并自动同步为 scrypt 密码哈希。
+- 用户与密码保存在 SQLite 中，密码使用 scrypt 哈希；账号密码通过界面维护，不再写入明文文件。
 - 支持管理员、普通用户和服务端页面级授权。
 - 已实现分享链接、同步映射、任务中心、系统配置、权限管理页面。
 - 非敏感配置集中在 `config/app.json`；Cookie 和会话密钥单独保存且不提交 Git。

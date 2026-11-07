@@ -29,9 +29,6 @@ pipeline {
                       mkdir -p "$DEPLOY_DIR/config"
                       cp "$WORKSPACE/config/app.json" "$DEPLOY_DIR/config/app.json"
                     fi
-                    if [ ! -f "$DEPLOY_DIR/data/password.txt" ]; then
-                      cp "$WORKSPACE/data/password.txt" "$DEPLOY_DIR/data/password.txt"
-                    fi
                 '''
             }
         }

@@ -24,14 +24,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .auth import (
-    PAGES, password_hash, password_valid, read_password_file,
-    sync_password_file, user_payload, write_password_file,
+    PAGES, ensure_admin_account, import_legacy_password_file,
+    password_hash, password_valid, user_payload,
 )
 from .client import BaiduPanClient, BaiduPanError
 from .providers import (
     create_client, is_share_invalid_error, normalize_share, PROVIDERS,
 )
-from .config import AppConfig, load_app_config
+from .config import (
+    RESTART_REQUIRED_CONFIG_KEYS, AppConfig, load_app_config, save_app_config,
+)
 from .cookies import (
     ENV_COOKIE_ID, CookieSecretStore, environment_cookie_record, mask_cookie,
     redact_sensitive, validate_cookie_value,
@@ -63,12 +65,6 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
         path.chmod(0o600)
     except OSError:
         pass
-
-
-def _ensure_password_file(path: Path) -> None:
-    if path.exists():
-        return
-    write_password_file(path, [("admin", "admin123", "admin")])
 
 
 def _prepare_database(cfg: AppConfig, allow_legacy_migration: bool) -> None:
@@ -108,17 +104,18 @@ def create_app(
         cfg = AppConfig(
             app_name=cfg.app_name, host=cfg.host, port=cfg.port,
             timezone=cfg.timezone, database_path=root / "app.sqlite3",
-            password_file=root / "password.txt", secret_file=root / "secrets.json",
+            secret_file=root / "secrets.json",
             log_file=root / "logs" / "app.log",
             log_retention_days=cfg.log_retention_days,
             task_workers=cfg.task_workers,
             scheduler_poll_seconds=cfg.scheduler_poll_seconds,
             sync_history_retention_days=cfg.sync_history_retention_days,
             sync_history_max_runs_per_mapping=cfg.sync_history_max_runs_per_mapping,
-            raw=cfg.raw,
+            config_path=root / "app.json",
+            legacy_password_file=root / "password.txt",
+            raw=dict(cfg.raw),
         )
     _prepare_database(cfg, allow_legacy_migration=not testing_override)
-    _ensure_password_file(cfg.password_file)
     _configure_logging(cfg)
 
     secrets_config = _read_json(cfg.secret_file)
@@ -161,7 +158,8 @@ def create_app(
     async def lifespan(app: FastAPI):
         store = db()
         try:
-            sync_password_file(store, cfg.password_file)
+            import_legacy_password_file(store, cfg.legacy_password_file)
+            ensure_admin_account(store)
         finally:
             store.close()
         app.state.tasks = TaskManager(
@@ -261,7 +259,6 @@ def create_app(
         body = await request.json()
         store = db()
         try:
-            sync_password_file(store, cfg.password_file)
             user = store.get_user_by_username(str(body.get("username", "")))
             if not user or not password_valid(str(body.get("password", "")), user.password_hash):
                 raise HTTPException(401, "用户名或密码错误")
@@ -322,15 +319,71 @@ def create_app(
             if environment:
                 cookies.append(asdict(environment))
             return {
-                "config": cfg.public_dict(), "cookies": cookies,
+                "config": cfg.settings_payload(), "cookies": cookies,
                 "cookie_configured": bool(cookies),
             }
         finally:
             store.close()
 
     @app.put("/api/settings")
-    async def update_settings(_: Request, __: User = Depends(require_admin)) -> dict[str, bool]:
-        raise HTTPException(410, "请使用多 Cookie 管理接口")
+    async def update_settings(
+        request: Request, _: User = Depends(require_admin),
+    ) -> dict[str, Any]:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(400, "配置内容格式无效")
+        updates = _settings_updates(body)
+        if not updates:
+            raise HTTPException(400, "没有可更新的配置项")
+        try:
+            save_app_config(cfg, updates)
+        except OSError as exc:
+            raise HTTPException(500, f"保存配置文件失败：{exc}") from exc
+        if "app_name" in updates:
+            app.title = cfg.app_name
+        if "log_retention_days" in updates:
+            for handler in logging.getLogger().handlers:
+                if getattr(handler, "_bdpan_handler", False):
+                    handler.backupCount = cfg.log_retention_days  # type: ignore[attr-defined]
+        tasks = getattr(app.state, "tasks", None)
+        if tasks is not None:
+            if "scheduler_poll_seconds" in updates:
+                tasks.scheduler_poll_seconds = cfg.scheduler_poll_seconds
+            if "sync_history_retention_days" in updates:
+                tasks.history_retention_days = cfg.sync_history_retention_days
+            if "sync_history_max_runs_per_mapping" in updates:
+                tasks.history_max_runs_per_mapping = (
+                    cfg.sync_history_max_runs_per_mapping
+                )
+        return {
+            "ok": True,
+            "restart_required": [
+                key for key in updates if key in RESTART_REQUIRED_CONFIG_KEYS
+            ],
+            "config": cfg.settings_payload(),
+        }
+
+    @app.post("/api/account/password")
+    async def change_password(
+        request: Request, user: User = Depends(current_user),
+    ) -> dict[str, bool]:
+        body = await request.json()
+        current_password = str(body.get("current_password", ""))
+        new_password = str(body.get("new_password", ""))
+        if not password_valid(current_password, user.password_hash):
+            raise HTTPException(400, "当前密码不正确")
+        if len(new_password) < 8:
+            raise HTTPException(400, "新密码至少 8 个字符")
+        if new_password == current_password:
+            raise HTTPException(400, "新密码不能与当前密码相同")
+        store = db()
+        try:
+            store.upsert_user(
+                user.username, password_hash(new_password), user.role
+            )
+        finally:
+            store.close()
+        return {"ok": True}
 
     @app.get("/api/cookies")
     def list_cookies(_: User = Depends(require_page("settings"))) -> list[dict[str, Any]]:
@@ -479,18 +532,17 @@ def create_app(
         password = str(body.get("password", ""))
         role = str(body.get("role", "user"))
         pages = _valid_pages(body.get("pages", []))
-        if (not username or ":" in username or ":" in password
+        if (not username or ":" in username
                 or len(password) < 8 or role not in {"admin", "user"}):
             raise HTTPException(400, "用户名、密码或角色无效；密码至少 8 个字符")
-        records = read_password_file(cfg.password_file)
-        if any(item[0] == username for item in records):
-            raise HTTPException(409, "用户名已存在")
-        records.append((username, password, role))
-        write_password_file(cfg.password_file, records)
         store = db()
         try:
+            if store.get_user_by_username(username):
+                raise HTTPException(409, "用户名已存在")
             user_id = store.upsert_user(username, password_hash(password), role)
-            store.set_user_permissions(user_id, list(PAGES) if role == "admin" else pages)
+            store.set_user_permissions(
+                user_id, list(PAGES) if role == "admin" else pages
+            )
             return {"id": user_id}
         finally:
             store.close()
@@ -508,22 +560,19 @@ def create_app(
                 raise HTTPException(400, "不能取消当前登录管理员的管理员角色")
             if role not in {"admin", "user"}:
                 raise HTTPException(400, "角色无效")
+            if target.role == "admin" and role != "admin":
+                other_admins = [
+                    item for item in store.list_users()
+                    if item.role == "admin" and item.active
+                    and item.id != target.id
+                ]
+                if not other_admins:
+                    raise HTTPException(400, "系统必须至少保留一个管理员")
             password = str(body.get("password", ""))
-            if password and (len(password) < 8 or ":" in password):
+            if password and len(password) < 8:
                 raise HTTPException(400, "密码至少 8 个字符")
-            records = read_password_file(cfg.password_file)
-            updated: list[tuple[str, str, str]] = []
-            plaintext = ""
-            for username, old_password, old_role in records:
-                if username == target.username:
-                    plaintext = password or old_password
-                    updated.append((username, plaintext, role))
-                else:
-                    updated.append((username, old_password, old_role))
-            if not plaintext:
-                raise HTTPException(400, "password.txt 中未找到该用户")
-            write_password_file(cfg.password_file, updated)
-            store.upsert_user(target.username, password_hash(plaintext), role)
+            digest = password_hash(password) if password else target.password_hash
+            store.upsert_user(target.username, digest, role)
             store.set_user_permissions(
                 user_id, list(PAGES) if role == "admin" else _valid_pages(body.get("pages", []))
             )
@@ -540,10 +589,14 @@ def create_app(
             target = store.get_user(user_id)
             if not target:
                 raise HTTPException(404, "用户不存在")
-            records = [item for item in read_password_file(cfg.password_file) if item[0] != target.username]
-            if not any(item[2] == "admin" for item in records):
-                raise HTTPException(400, "系统必须至少保留一个管理员")
-            write_password_file(cfg.password_file, records)
+            if target.role == "admin":
+                other_admins = [
+                    item for item in store.list_users()
+                    if item.role == "admin" and item.active
+                    and item.id != target.id
+                ]
+                if not other_admins:
+                    raise HTTPException(400, "系统必须至少保留一个管理员")
             store.delete_user(user_id)
             return {"ok": True}
         finally:
@@ -787,6 +840,37 @@ def create_app(
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return app
+
+
+def _settings_updates(body: dict[str, Any]) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    if "app_name" in body:
+        name = str(body["app_name"]).strip()
+        if not name:
+            raise HTTPException(400, "系统名称不能为空")
+        if len(name) > 60:
+            raise HTTPException(400, "系统名称不能超过 60 个字符")
+        updates["app_name"] = name
+    ranges = {
+        "log_retention_days": (1, 3650, "日志保留天数"),
+        "task_workers": (1, 32, "任务并发数"),
+        "scheduler_poll_seconds": (5, 3600, "调度轮询间隔"),
+        "sync_history_retention_days": (1, 3650, "同步历史保留天数"),
+        "sync_history_max_runs_per_mapping": (10, 100000, "每个映射最多保留运行数"),
+    }
+    for key, (minimum, maximum, label) in ranges.items():
+        if key not in body:
+            continue
+        try:
+            value = int(body[key])
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, f"{label}必须是整数") from exc
+        if not minimum <= value <= maximum:
+            raise HTTPException(
+                400, f"{label}必须在 {minimum} 到 {maximum} 之间"
+            )
+        updates[key] = value
+    return updates
 
 
 def _valid_pages(value: Any) -> list[str]:
